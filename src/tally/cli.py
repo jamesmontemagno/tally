@@ -399,14 +399,22 @@ data_sources:
   - name: Chase
     file: data/chase.csv
     format: "{date:%m/%d/%Y}, {_}, {description}, {_}, {_}, {amount}"
+  - name: BofA Checking
+    file: data/bofa.csv
+    format: "{date:%m/%d/%Y}, {description}, {-amount}"  # Bank: negative = expense
 ```
 
 **Format string syntax:**
 - `{date:%m/%d/%Y}` - Date column with strptime format
 - `{description}` - Transaction description column
-- `{amount}` - Amount column
+- `{amount}` - Amount column (positive = expense)
+- `{-amount}` - Negate amounts (for bank accounts where negative = expense)
 - `{location}` - Optional location/state column
 - `{_}` - Skip this column
+
+**Sign conventions:**
+- Credit cards typically show charges as positive → use `{amount}`
+- Bank accounts typically show debits as negative → use `{-amount}`
 
 Position in the string = column index (0-based).
 
@@ -726,18 +734,24 @@ data_sources:
   - name: Chase
     file: data/chase.csv
     format: "{date:%m/%d/%Y}, {_}, {description}, {_}, {amount}"
+  - name: BofA Checking
+    file: data/bofa.csv
+    format: "{date:%m/%d/%Y}, {description}, {-amount}"  # Bank: negative = expense
 ```
 
 **Format string tokens:**
 - `{date:%m/%d/%Y}` - Date column (with strptime format)
 - `{description}` - Description/merchant column
-- `{amount}` - Amount column
+- `{amount}` - Amount column (positive = expense)
+- `{-amount}` - Negate amounts (for bank accounts where negative = expense)
 - `{location}` - Optional location column
 - `{_}` - Skip column
 
-Use `tally inspect <file>` to see the CSV structure before creating a format string.
+**Sign conventions:**
+- Credit cards typically show charges as positive → use `{amount}`
+- Bank accounts typically show debits as negative → use `{-amount}`
 
-See AGENTS.md for detailed examples of creating format strings.
+Use `tally inspect <file>` to see the CSV structure before creating a format string.
 '''
 
 
