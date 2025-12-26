@@ -1,0 +1,1530 @@
+"""
+Budget Analyzer CLI - Command-line interface.
+
+Usage:
+    budget-analyze /path/to/config/dir               # Analyze using config directory
+    budget-analyze /path/to/config/dir --summary     # Summary only (no HTML)
+    budget-analyze /path/to/config/dir --settings settings-2024.yaml
+    budget-analyze --help-config                     # Show detailed config documentation
+"""
+
+import argparse
+import os
+import sys
+
+from .config_loader import load_config
+from .merchant_utils import get_all_rules
+from .analyzer import (
+    parse_amex,
+    parse_boa,
+    parse_generic_csv,
+    auto_detect_csv_format,
+    analyze_transactions,
+    print_summary,
+    write_summary_file,
+)
+
+
+CONFIG_HELP = '''
+BUDGET ANALYZER - CONFIGURATION
+================================
+
+QUICK START
+-----------
+1. Run: budget-analyze init ./my-budget
+2. Add CSV/TXT statements to my-budget/data/
+3. Edit my-budget/config/settings.yaml with your data sources
+4. Run: budget-analyze run ./my-budget/config
+
+DIRECTORY STRUCTURE
+-------------------
+my-budget/
+├── config/
+│   ├── settings.yaml           # Data sources & settings
+│   └── merchant_categories.csv # Custom category overrides (optional)
+├── data/                       # Your statement exports
+└── output/                     # Generated reports
+
+SETTINGS.YAML
+-------------
+year: 2025
+data_sources:
+  - name: AMEX
+    file: data/amex.csv
+    type: amex                  # or "boa" for Bank of America
+  # Custom CSV format:
+  - name: Chase
+    file: data/chase.csv
+    format: "{date:%m/%d/%Y},{description},{amount}"
+output_dir: output
+
+# Optional: specify home locations (auto-detected if not set)
+home_locations:
+  - WA
+  - OR                          # Nearby state to not count as travel
+
+# Optional: pretty names for travel destinations
+travel_labels:
+  HI: Hawaii
+  GB: United Kingdom
+
+TRAVEL DETECTION
+----------------
+International transactions are automatically classified as travel.
+Domestic out-of-state is NOT auto-travel. To opt-in, add merchant rules:
+
+  .*\\sHI$,Hawaii Trip,Travel,Hawaii
+  .*\\sCA$,California Trip,Travel,California
+
+DISCOVERING UNKNOWN MERCHANTS
+-----------------------------
+Use the discover command to find uncategorized transactions:
+  budget-analyze discover               # Human-readable output
+  budget-analyze discover --format csv  # CSV output to copy-paste
+  budget-analyze discover --format json # JSON for programmatic use
+
+CUSTOM MERCHANT RULES
+---------------------
+~900 merchants are built-in. Add overrides in merchant_categories.csv:
+
+Pattern,Merchant,Category,Subcategory
+MY LOCAL CAFE,Local Cafe,Food,Coffee
+ZELLE.*JANE,Jane (Babysitter),Personal,Childcare
+
+Pattern syntax (Python regex):
+  NETFLIX           Contains "NETFLIX"
+  DELTA|SOUTHWEST   Either one
+  COSTCO(?!.*GAS)   COSTCO but not COSTCO GAS
+  ^ATT\\s           Starts with "ATT "
+
+Use: budget-analyze inspect <file.csv> to see transaction formats.
+'''
+
+STARTER_SETTINGS = '''# Budget Analyzer Settings
+year: {year}
+title: "Spending Analysis {year}"
+
+# Data sources - add your statement files here
+data_sources:
+  # Example AMEX CSV export:
+  # - name: AMEX
+  #   file: data/amex-{year}.csv
+  #   type: amex
+  #
+  # Example Bank of America text statement:
+  # - name: BOA Checking
+  #   file: data/boa-checking.txt
+  #   type: boa
+
+output_dir: output
+html_filename: spending_summary.html
+
+# Home locations (auto-detected if not specified)
+# Transactions outside these locations are classified as travel
+# home_locations:
+#   - WA
+#   - OR
+
+# Optional: pretty names for travel destinations in reports
+# travel_labels:
+#   HI: Hawaii
+#   GB: United Kingdom
+'''
+
+STARTER_MERCHANT_CATEGORIES = '''# Custom Merchant Categorization Rules
+#
+# Add your custom rules here. These override the ~700 built-in rules.
+# Format: Pattern,Merchant,Category,Subcategory
+#
+# - Pattern: Python regex (case-insensitive) matched against transaction descriptions
+# - Use | for alternatives: DELTA|SOUTHWEST matches either
+# - Use (?!...) for negative lookahead: UBER\\s(?!EATS) excludes Uber Eats
+# - Test patterns at regex101.com (Python flavor)
+#
+# First match wins - your rules are checked before built-in rules.
+# Run: budget-analyze inspect <file> to see your transaction descriptions.
+#
+# Examples:
+#   MY LOCAL BAKERY,My Favorite Bakery,Food,Restaurant
+#   JOHNS PLUMBING,John's Plumbing,Bills,Home Repair
+#   ZELLE.*JANE,Jane (Babysitter),Personal,Childcare
+
+Pattern,Merchant,Category,Subcategory
+
+# Add your custom rules below:
+
+'''
+
+STARTER_AGENTS_MD = '''# Budget Analyzer - Agent Instructions
+
+This document provides instructions for AI agents working with Budget Analyzer.
+
+## Quick Reference
+
+```bash
+# Show help
+budget-analyze
+
+# Initialize a new budget directory (current dir or specified)
+budget-analyze init
+budget-analyze init ./my-budget
+
+# Run analysis (uses ./config by default)
+budget-analyze run
+budget-analyze run ./path/to/config
+
+# View summary only (find uncategorized transactions)
+budget-analyze run --summary
+
+# Inspect a CSV file to see its structure and get format suggestions
+budget-analyze inspect path/to/file.csv
+
+# Discover unknown merchants and get suggested rules
+budget-analyze discover                    # Human-readable output
+budget-analyze discover --format csv       # CSV output for import
+budget-analyze discover --format json      # JSON output for programmatic use
+budget-analyze discover --limit 50         # Show top 50 by spend
+```
+
+## Your Tasks
+
+When working with this budget analyzer, you may be asked to:
+
+1. **Set up a new budget directory** - Use `budget-analyze init`
+2. **Add merchant categorization rules** - Edit `config/merchant_categories.csv`
+3. **Configure data sources** - Edit `config/settings.yaml`
+4. **Analyze and fix uncategorized transactions** - Run with `--summary`, then add rules
+
+## Understanding merchant_categories.csv
+
+This is the main file you'll edit. Each row maps a transaction pattern to a category.
+
+**Format:** `Pattern,Merchant,Category,Subcategory`
+
+**Pattern** is a Python regex (case-insensitive) matched against transaction descriptions.
+
+### Pattern Examples
+
+| Pattern | What it matches | Use case |
+|---------|-----------------|----------|
+| `NETFLIX` | Contains "NETFLIX" | Simple substring |
+| `STARBUCKS` | Contains "STARBUCKS" | Simple substring |
+| `DELTA\\|SOUTHWEST` | "DELTA" OR "SOUTHWEST" | Multiple variations |
+| `WHOLE FOODS\\|WHOLEFDS` | Either spelling | Handle abbreviations |
+| `UBER\\s(?!EATS)` | "UBER " NOT followed by "EATS" | Exclude Uber Eats from rideshare |
+| `COSTCO(?!.*GAS)` | "COSTCO" without "GAS" | Exclude gas station |
+| `APPLE\\.COM(?!/BILL)` | Apple.com but not /BILL | Exclude subscriptions |
+| `^ATT\\s` | Starts with "ATT " | Avoid matching "SEATTLE" |
+| `CHICK.FIL.A` | CHICK-FIL-A or CHICKFILA | `.` matches any char |
+
+### Adding New Rules
+
+1. Look at the raw transaction description from the bank statement
+2. Find a unique substring or pattern that identifies the merchant
+3. Add a row: `PATTERN,Clean Name,Category,Subcategory`
+
+**Example:** If you see `"WHOLEFDS MKT 10847"` in a statement:
+```csv
+WHOLEFDS,Whole Foods,Food,Grocery
+```
+
+### Rule Order Matters
+
+Rules are matched top-to-bottom. Put specific rules before general ones:
+
+```csv
+# Specific first
+UBER\\s*EATS,Uber Eats,Food,Delivery
+# General second
+UBER,Uber,Transport,Rideshare
+```
+
+### Standard Categories
+
+Use these categories for consistency:
+
+| Category | Subcategories |
+|----------|---------------|
+| Food | Grocery, Restaurant, Fast Food, Fast Casual, Coffee, Delivery, Bakery |
+| Shopping | Online, Retail, Clothing, Electronics, Home, Kids, Beauty, Books |
+| Travel | Airline, Lodging, Car Rental, Agency |
+| Transport | Rideshare, Gas, Parking, Tolls, Auto Service |
+| Subscriptions | Streaming, Software, News |
+| Health | Gym, Pharmacy, Medical, Vision, Fitness |
+| Utilities | Mobile, Internet/TV, Electric, Water |
+| Entertainment | Movies, Events, Activities, Attractions |
+| Transfers | P2P, CC Payment, Investment, Transfer |
+| Bills | Mortgage, Insurance, Tax |
+| Personal | Childcare, Grooming, Spa |
+| Cash | ATM, Check |
+
+## Workflow: Adding Rules for Uncategorized Transactions
+
+### Method 1: Using the discover command (Recommended for agents)
+
+1. Run discover to find unknown merchants sorted by spend:
+   ```bash
+   budget-analyze discover --format json
+   ```
+
+2. The output includes:
+   - `raw_description`: The original transaction description
+   - `suggested_pattern`: A regex pattern to match it
+   - `suggested_merchant`: A clean merchant name
+   - `count`: Number of transactions
+   - `total_spend`: Total amount spent
+
+3. For each unknown merchant:
+   - Review the suggested pattern and merchant name
+   - Determine the appropriate Category and Subcategory
+   - Add to `merchant_categories.csv`
+
+4. Re-run to verify:
+   ```bash
+   budget-analyze run --summary
+   ```
+
+### Method 2: Manual inspection
+
+1. Run analysis to find unknown merchants:
+   ```bash
+   budget-analyze run --summary
+   ```
+
+2. Look for transactions categorized as "Unknown"
+
+3. For each unknown merchant:
+   - Find the raw description in the statement file
+   - Create a pattern that uniquely matches it
+   - Add to `merchant_categories.csv`
+
+4. Re-run to verify categorization
+
+## Using discover for Bulk Rule Creation
+
+The discover command is designed to help agents efficiently create rules:
+
+```bash
+# Get JSON output for programmatic processing
+budget-analyze discover --format json --limit 0
+
+# Get CSV output ready for import (just needs categories filled in)
+budget-analyze discover --format csv
+```
+
+### JSON Output Structure
+
+```json
+[
+  {
+    "raw_description": "STARBUCKS STORE 12345 SEATTLE WA",
+    "suggested_pattern": "STARBUCKS\\s*STORE",
+    "suggested_merchant": "Starbucks Store",
+    "count": 15,
+    "total_spend": 87.50,
+    "examples": [
+      {"date": "2025-01-15", "amount": -5.50, "description": "Starbucks Store"}
+    ]
+  }
+]
+```
+
+### Workflow for Agents
+
+1. Run `budget-analyze discover --format json --limit 0`
+2. Parse the JSON output
+3. For each unknown merchant:
+   - Use `suggested_pattern` as starting point (may need refinement)
+   - Use `suggested_merchant` as the merchant name
+   - Determine Category/Subcategory based on merchant type
+4. Append rules to `config/merchant_categories.csv`
+5. Run `budget-analyze run --summary` to verify improvement
+6. Repeat until Unknown transactions are minimized
+
+## File Locations
+
+```
+my-budget/
+├── config/
+│   ├── settings.yaml           # Data sources, year, output settings
+│   └── merchant_categories.csv # Pattern → Category rules (EDIT THIS)
+├── data/                       # Bank/CC statement exports
+└── output/                     # Generated reports
+```
+
+## Travel Detection
+
+International transactions are automatically classified as travel.
+Domestic out-of-state transactions are NOT auto-travel (opt-in via merchant rules).
+
+To mark domestic locations as travel, add patterns to merchant_categories.csv:
+```csv
+.*\\sHI$,Hawaii Trip,Travel,Hawaii
+.*\\sCA$,California Trip,Travel,California
+```
+
+Configure home in settings.yaml:
+```yaml
+# Optional: specify home locations (for international exclusions)
+home_locations:
+  - WA
+
+# Optional: pretty names for travel destinations
+travel_labels:
+  HI: Hawaii
+  GB: United Kingdom
+```
+
+If `home_locations` is not specified, it's auto-detected from your most common transaction location.
+
+## Statement Formats and Custom Parsing
+
+The tool supports three ways to parse CSV files:
+
+### 1. Predefined Types (backward compatible)
+```yaml
+data_sources:
+  - name: AMEX
+    file: data/amex.csv
+    type: amex      # Expects Date,Description,Amount columns
+  - name: BOA
+    file: data/boa.txt
+    type: boa       # Expects "MM/DD/YYYY Description Amount Balance" lines
+```
+
+### 2. Custom Format Strings (for any CSV)
+Use a format string to specify column mappings:
+```yaml
+data_sources:
+  - name: Chase
+    file: data/chase.csv
+    format: "{date:%m/%d/%Y}, {_}, {description}, {_}, {_}, {amount}"
+```
+
+**Format string syntax:**
+- `{date:%m/%d/%Y}` - Date column with strptime format
+- `{description}` - Transaction description column
+- `{amount}` - Amount column
+- `{location}` - Optional location/state column
+- `{_}` - Skip this column
+
+Position in the string = column index (0-based).
+
+### Discovering CSV Structure
+
+Use the **inspect** command to analyze an unknown CSV:
+```bash
+budget-analyze inspect path/to/file.csv
+```
+
+This shows column headers, indices, and sample data rows.
+
+### Workflow: Creating a Format String for Any CSV
+
+**Step 1: Inspect the file**
+```bash
+budget-analyze inspect data/newbank.csv
+```
+
+**Step 2: Identify the columns**
+Look at the output and find:
+- Which column has the **date** (and what format: MM/DD/YYYY, YYYY-MM-DD, etc.)
+- Which column has the **description** (merchant name)
+- Which column has the **amount**
+- Optionally, which column has **location** (state/country code)
+
+**Step 3: Build the format string**
+For each column position (0, 1, 2, ...), add:
+- `{date:%m/%d/%Y}` if it's the date column (adjust format as needed)
+- `{description}` if it's the description column
+- `{amount}` if it's the amount column
+- `{location}` if it's a location column
+- `{_}` for any columns to skip
+
+**Example:** A CSV with columns: Transaction Date, Post Date, Description, Category, Amount
+
+```yaml
+format: "{date:%m/%d/%Y}, {_}, {description}, {_}, {amount}"
+#         col 0           col 1  col 2       col 3  col 4
+```
+
+**Common date formats:**
+- `%m/%d/%Y` - 01/15/2024 (US format)
+- `%Y-%m-%d` - 2024-01-15 (ISO format)
+- `%d/%m/%Y` - 15/01/2024 (European format)
+- `%m/%d/%y` - 01/15/24 (2-digit year)
+
+**Step 4: Add to settings.yaml and run**
+```bash
+budget-analyze run
+```
+
+Transaction descriptions look like:
+- AMEX: `"NETFLIX.COM"`, `"UBER *EATS"`, `"STARBUCKS STORE 12345 SEATTLE WA"`
+- BOA: `"NETFLIX.COM DES:RECURRING ID:xxx"`, `"ZELLE TO JOHN DOE"`
+
+## Common Tasks
+
+### Task: User wants to analyze their spending
+1. Ensure `config/settings.yaml` has correct data sources
+2. Run `budget-analyze run`
+3. Open the HTML report in `output/`
+
+### Task: User has many "Unknown" transactions
+1. Run `budget-analyze discover --format json` to get unknowns sorted by spend
+2. For each unknown merchant, determine appropriate Category/Subcategory
+3. Add patterns to `merchant_categories.csv`
+4. Run `budget-analyze run --summary` to verify improvement
+5. Repeat until unknowns are minimized
+
+### Task: User wants to track a specific merchant
+1. Get the exact description from their statement
+2. Create a pattern that matches it
+3. Add to `merchant_categories.csv` with appropriate category
+
+### Task: User wants to separate Costco groceries from Costco gas
+```csv
+COSTCO\\s*GAS,Costco Gas,Transport,Gas
+COSTCO(?!\\s*GAS),Costco,Food,Grocery
+```
+(Gas rule must come first)
+
+## Tips
+
+- Run `budget-analyze` with no args to see help
+- Test regex patterns at regex101.com (Python flavor)
+- Comments start with `#` in CSV files
+- Escape special regex chars: `\\.` for literal dot, `\\*` for literal asterisk
+- The tool cleans common prefixes (APLPAY, SQ*, TST*) automatically
+
+---
+
+## Real-World Workflow Example
+
+Here's a typical workflow when analyzing a new year's spending data:
+
+### 1. Check for existing config
+```bash
+# Look for existing configs from other years to reuse
+ls ../2024/config/ ../2025/config/ 2>/dev/null
+```
+
+### 2. Examine statement file formats
+The tool expects specific formats. Your files may need transformation:
+
+**Expected AMEX format (CSV):**
+```csv
+Date,Description,Amount
+01/15/2024,AMAZON.COM,-45.99
+01/16/2024,STARBUCKS STORE 12345,-6.50
+```
+
+**Expected BOA format (TXT, space-separated):**
+```
+01/15/2024 NETFLIX.COM DES:RECURRING -15.99 1234.56
+01/16/2024 ZELLE TO JOHN DOE -100.00 1134.56
+```
+
+### 3. Transform data if needed
+If your statement files have different formats, transform them with Python:
+
+**Example: Transform multi-line AMEX export:**
+```python
+import csv
+with open('Amex_raw.csv', 'r') as f:
+    reader = csv.reader(f)
+    # Extract date, description, amount from your specific format
+    # Write to clean CSV with Date,Description,Amount columns
+```
+
+**Example: Transform BOA CSV to TXT:**
+```python
+import csv
+with open('BOA.csv', 'r') as f:
+    reader = csv.DictReader(f)
+    with open('data/boa_clean.txt', 'w') as out:
+        for row in reader:
+            # Format: MM/DD/YYYY Description Amount Balance
+            out.write(f"{row['Date']} {row['Description']} {row['Amount']} {row['Balance']}\\n")
+```
+
+### 4. Copy existing merchant categories
+If another year has good patterns, start with those:
+```bash
+cp ../2025/config/merchant_categories.csv config/
+```
+
+### 5. Run analysis and iterate
+```bash
+# Initial run - will have many "Unknown"
+budget-analyze run
+
+# Check what's unknown
+budget-analyze run --summary --category Unknown
+
+# Extract unique unknown patterns for analysis
+python3 << 'EOF'
+import csv
+unknowns = {}
+with open('output/transactions.csv') as f:  # or parse from summary
+    # Group by description pattern, sum amounts
+    pass
+# Print top unknowns by spend
+EOF
+```
+
+### 6. Add patterns in batches
+Add patterns for the highest-spend unknowns first:
+
+```csv
+# High-value unknowns from 2024
+BMWFINANCIAL|BMW FINANCIAL,BMW Financial Services,Bills,Auto Loan
+ASHTON BELLEVUE,Ashton Apartments (Rent),Bills,Rent
+MICROSOFT DES:EDIPAYMENT,Microsoft Payroll,Income,Salary
+```
+
+### 7. Iterate until Unknown < 5%
+Re-run after each batch of patterns until categorization rate is acceptable:
+```bash
+budget-analyze run  # Check Unknown total
+# Add more patterns
+budget-analyze run  # Verify improvement
+```
+
+### Common Data Issues
+
+**BOA files with summary headers:**
+```python
+# Skip header rows before the actual data
+for row in reader:
+    if row['Date'] and '/' in row['Date']:  # Skip summary rows
+        # Process transaction
+```
+
+**AMEX multi-line format:**
+Each transaction may span multiple lines. Look for date patterns to identify record boundaries.
+
+**CHECKCARD prefix in BOA:**
+BOA often prefixes with "CHECKCARD": add patterns like `CHECKCARD.*STARBUCKS`
+
+**State/location suffixes:**
+Descriptions often end with location: `STARBUCKS SEATTLE WA` - the tool handles this automatically.
+'''
+
+STARTER_CLAUDE_MD = '''# CLAUDE.md - Instructions for Claude Code
+
+This file provides context for Claude Code when working in this budget directory.
+
+## Project Overview
+
+This is a personal budget analysis directory using the `budget-analyze` CLI tool.
+The tool categorizes bank/credit card transactions and generates spending reports.
+
+## Key Commands
+
+```bash
+# Run analysis (uses ./config by default)
+budget-analyze run
+
+# Show summary only (good for checking Unknown transactions)
+budget-analyze run --summary
+
+# Run with specific config directory
+budget-analyze run ./path/to/config
+
+# Initialize a new budget directory
+budget-analyze init
+
+# Discover unknown merchants (KEY FOR CLASSIFICATION)
+budget-analyze discover                # Human-readable
+budget-analyze discover --format json  # For programmatic use
+budget-analyze discover --format csv   # Ready to copy into rules
+
+# Inspect a CSV to determine its format
+budget-analyze inspect data/file.csv
+```
+
+## Directory Structure
+
+```
+.
+├── config/
+│   ├── settings.yaml           # Data sources and settings
+│   └── merchant_categories.csv # Pattern matching rules (MAIN FILE TO EDIT)
+├── data/                       # Statement files (DO NOT commit - contains PII)
+└── output/                     # Generated reports
+```
+
+## Primary Task: Classifying Unknown Merchants
+
+When asked to improve categorization:
+
+1. Run `budget-analyze discover --format json` to find unknown merchants sorted by spend
+2. For each unknown merchant:
+   - Identify what the merchant is (restaurant, store, subscription, etc.)
+   - Determine appropriate Category and Subcategory
+   - Create a regex pattern that matches the transaction description
+3. Add rules to `config/merchant_categories.csv`
+4. Run `budget-analyze run --summary` to verify improvement
+5. Repeat until Unknown < 5% of total
+
+The `discover` command provides suggested patterns and merchant names to speed up this process.
+
+## Pattern Syntax Quick Reference
+
+The Pattern column uses Python regex (case-insensitive):
+
+| Pattern | Matches |
+|---------|---------|
+| `NETFLIX` | Contains "NETFLIX" |
+| `DELTA\\|UNITED` | "DELTA" or "UNITED" |
+| `UBER\\s(?!EATS)` | "UBER " not followed by "EATS" |
+| `COSTCO(?!.*GAS)` | "COSTCO" without "GAS" |
+| `^ATT\\s` | Starts with "ATT " |
+
+## Common Categories
+
+- **Food**: Grocery, Restaurant, Fast Food, Coffee, Delivery
+- **Shopping**: Online, Retail, Clothing, Electronics, Home
+- **Travel**: Airline, Lodging, Car Rental
+- **Transport**: Rideshare, Gas, Parking
+- **Subscriptions**: Streaming, Software
+- **Health**: Gym, Pharmacy, Medical
+- **Bills**: Rent, Mortgage, Insurance, Utilities
+- **Transfers**: P2P, CC Payment
+
+## Travel Detection
+
+International transactions are automatically classified as travel.
+Domestic out-of-state is NOT auto-travel (opt-in via merchant rules).
+
+To mark a domestic location as travel, add to merchant_categories.csv:
+```csv
+.*\\sHI$,Hawaii Trip,Travel,Hawaii
+```
+
+## Important Notes
+
+- Statement files in `data/` contain PII - never commit or display raw contents
+- First matching rule wins - put specific patterns before general ones
+- Test patterns at regex101.com (Python flavor)
+- The tool auto-cleans prefixes like APLPAY, SQ*, TST*
+
+## Data Format Requirements
+
+The tool supports multiple data formats:
+
+### Predefined Types
+- **AMEX**: CSV with Date,Description,Amount columns (`type: amex`)
+- **BOA**: TXT with "MM/DD/YYYY Description Amount Balance" per line (`type: boa`)
+
+### Custom Format Strings
+For any other CSV, use the `format` field with a format string:
+
+```yaml
+data_sources:
+  - name: Chase
+    file: data/chase.csv
+    format: "{date:%m/%d/%Y}, {_}, {description}, {_}, {amount}"
+```
+
+**Format string tokens:**
+- `{date:%m/%d/%Y}` - Date column (with strptime format)
+- `{description}` - Description/merchant column
+- `{amount}` - Amount column
+- `{location}` - Optional location column
+- `{_}` - Skip column
+
+Use `budget-analyze inspect <file>` to see the CSV structure before creating a format string.
+
+See AGENTS.md for detailed examples of creating format strings.
+'''
+
+
+def init_config(target_dir):
+    """Initialize a new config directory with starter files."""
+    import datetime
+
+    config_dir = os.path.join(target_dir, 'config')
+    data_dir = os.path.join(target_dir, 'data')
+    output_dir = os.path.join(target_dir, 'output')
+
+    # Create directories
+    os.makedirs(config_dir, exist_ok=True)
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+
+    current_year = datetime.datetime.now().year
+    files_created = []
+    files_skipped = []
+
+    # Write settings.yaml
+    settings_path = os.path.join(config_dir, 'settings.yaml')
+    if not os.path.exists(settings_path):
+        with open(settings_path, 'w') as f:
+            f.write(STARTER_SETTINGS.format(year=current_year))
+        files_created.append('config/settings.yaml')
+    else:
+        files_skipped.append('config/settings.yaml')
+
+    # Write merchant_categories.csv
+    merchants_path = os.path.join(config_dir, 'merchant_categories.csv')
+    if not os.path.exists(merchants_path):
+        with open(merchants_path, 'w') as f:
+            f.write(STARTER_MERCHANT_CATEGORIES)
+        files_created.append('config/merchant_categories.csv')
+    else:
+        files_skipped.append('config/merchant_categories.csv')
+
+    # Create .gitignore for data privacy
+    gitignore_path = os.path.join(target_dir, '.gitignore')
+    if not os.path.exists(gitignore_path):
+        with open(gitignore_path, 'w') as f:
+            f.write('''# Budget Analyzer - Ignore sensitive data
+data/
+output/
+''')
+        files_created.append('.gitignore')
+
+    # Create README
+    readme_path = os.path.join(target_dir, 'README.md')
+    if not os.path.exists(readme_path):
+        with open(readme_path, 'w') as f:
+            f.write(f'''# My Budget Analysis
+
+Budget analysis for {current_year}.
+
+## Setup
+
+1. Export your bank/credit card statements to `data/`
+2. Update `config/settings.yaml` with your data sources
+3. Add custom merchant rules to `config/merchant_categories.csv`
+4. Run: `budget-analyze ./config`
+
+## Documentation
+
+Run `budget-analyze --help-config` for detailed configuration guide.
+''')
+        files_created.append('README.md')
+
+    # Create AGENTS.md for AI agent instructions
+    agents_path = os.path.join(target_dir, 'AGENTS.md')
+    if not os.path.exists(agents_path):
+        with open(agents_path, 'w') as f:
+            f.write(STARTER_AGENTS_MD)
+        files_created.append('AGENTS.md')
+    else:
+        files_skipped.append('AGENTS.md')
+
+    # Create CLAUDE.md for Claude Code specific instructions
+    claude_path = os.path.join(target_dir, 'CLAUDE.md')
+    if not os.path.exists(claude_path):
+        with open(claude_path, 'w') as f:
+            f.write(STARTER_CLAUDE_MD)
+        files_created.append('CLAUDE.md')
+    else:
+        files_skipped.append('CLAUDE.md')
+
+    return files_created, files_skipped
+
+
+def cmd_init(args):
+    """Handle the 'init' subcommand."""
+    target_dir = os.path.abspath(args.dir)
+    print(f"Initializing budget directory: {target_dir}")
+    print()
+
+    created, skipped = init_config(target_dir)
+
+    if created:
+        print("Created:")
+        for f in created:
+            print(f"  {f}")
+
+    if skipped:
+        print("\nSkipped (already exist):")
+        for f in skipped:
+            print(f"  {f}")
+
+    print(f"""
+================================================================================
+NEXT STEPS
+================================================================================
+
+1. Export your bank/credit card statements to:
+   {target_dir}/data/
+
+2. Edit settings to add your data sources:
+   {target_dir}/config/settings.yaml
+
+   Example configuration:
+   ```yaml
+   year: 2025
+   data_sources:
+     - name: AMEX
+       file: data/amex-2025.csv
+       type: amex
+     - name: BOA Checking
+       file: data/checking.txt
+       type: boa
+   ```
+
+3. Run the analyzer:
+   budget-analyze run
+
+================================================================================
+STATEMENT FILE FORMATS
+================================================================================
+
+AMEX (CSV):
+  Export from American Express website. Expected columns:
+  Date,Description,Amount
+  01/15/2025,AMAZON.COM,-45.99
+  01/16/2025,STARBUCKS STORE 12345,-6.50
+
+BOA (TXT):
+  Export from Bank of America. Space-separated format:
+  MM/DD/YYYY Description Amount Balance
+  01/15/2025 NETFLIX.COM DES:RECURRING -15.99 1234.56
+
+================================================================================
+MERCHANT CATEGORIZATION
+================================================================================
+
+Edit config/merchant_categories.csv to add patterns for your merchants.
+
+Format: Pattern,Merchant,Category,Subcategory
+
+Pattern Syntax (Python regex, case-insensitive):
+  NETFLIX              Contains "NETFLIX"
+  DELTA|SOUTHWEST      Matches "DELTA" OR "SOUTHWEST"
+  UBER\\s(?!EATS)       "UBER " not followed by "EATS"
+  COSTCO(?!.*GAS)      "COSTCO" without "GAS" anywhere after
+  ^ATT\\s               Starts with "ATT "
+
+Common Categories:
+  Food:          Grocery, Restaurant, Fast Food, Coffee, Delivery
+  Shopping:      Online, Retail, Clothing, Electronics, Home
+  Travel:        Airline, Lodging, Car Rental
+  Transport:     Rideshare, Gas, Parking
+  Subscriptions: Streaming, Software
+  Health:        Gym, Pharmacy, Medical
+  Bills:         Rent, Mortgage, Insurance
+  Transfers:     P2P, CC Payment
+
+Tips:
+  - First match wins - put specific patterns before general ones
+  - Run 'budget-analyze run --summary' to find Unknown transactions
+  - Test patterns at regex101.com (Python flavor)
+  - Lines starting with # are comments
+
+================================================================================
+""")
+
+
+def cmd_run(args):
+    """Handle the 'run' subcommand."""
+    # Determine config directory
+    if args.config:
+        config_dir = os.path.abspath(args.config)
+    else:
+        # Default to ./config in current directory
+        config_dir = os.path.abspath('config')
+
+    if not os.path.isdir(config_dir):
+        print(f"Error: Config directory not found: {config_dir}", file=sys.stderr)
+        print(f"\nRun 'budget-analyze init' to create a new budget directory.", file=sys.stderr)
+        sys.exit(1)
+
+    # Load configuration
+    try:
+        config = load_config(config_dir, args.settings)
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    year = config.get('year', 2025)
+    home_locations = config.get('home_locations', set())
+    travel_labels = config.get('travel_labels', {})
+
+    if not args.quiet:
+        print(f"Budget Analyzer - {year}")
+        print(f"Config: {config_dir}/{args.settings}")
+        print()
+
+    # Load merchant rules (user rules override built-in baseline)
+    rules_file = os.path.join(config_dir, 'merchant_categories.csv')
+    if os.path.exists(rules_file):
+        rules = get_all_rules(rules_file)
+        if not args.quiet:
+            print(f"Loaded {len(rules)} categorization rules (user + baseline)")
+    else:
+        rules = get_all_rules()  # Use baseline only
+        if not args.quiet:
+            print(f"Using {len(rules)} built-in categorization rules")
+
+    # Parse transactions from configured data sources
+    all_txns = []
+    data_sources = config.get('data_sources', [])
+
+    if not data_sources:
+        print("Error: No data sources configured in settings", file=sys.stderr)
+        print(f"\nEdit {config_dir}/settings.yaml to add your data sources.", file=sys.stderr)
+        sys.exit(1)
+
+    for source in data_sources:
+        filepath = os.path.join(config_dir, '..', source['file'])
+        filepath = os.path.normpath(filepath)
+
+        if not os.path.exists(filepath):
+            # Try relative to config_dir parent
+            filepath = os.path.join(os.path.dirname(config_dir), source['file'])
+
+        if not os.path.exists(filepath):
+            if not args.quiet:
+                print(f"  {source['name']}: File not found - {source['file']}")
+            continue
+
+        # Get parser type and format spec (set by config_loader.resolve_source_format)
+        parser_type = source.get('_parser_type', source.get('type', '')).lower()
+        format_spec = source.get('_format_spec')
+
+        try:
+            if parser_type == 'amex':
+                txns = parse_amex(filepath, rules, home_locations)
+            elif parser_type == 'boa':
+                txns = parse_boa(filepath, rules, home_locations)
+            elif parser_type == 'generic' and format_spec:
+                txns = parse_generic_csv(filepath, format_spec, rules,
+                                         home_locations,
+                                         source_name=source.get('name', 'CSV'))
+            else:
+                if not args.quiet:
+                    print(f"  {source['name']}: Unknown parser type '{parser_type}'")
+                    print(f"    Use 'budget-analyze inspect {source['file']}' to determine format")
+                continue
+        except Exception as e:
+            if not args.quiet:
+                print(f"  {source['name']}: Error parsing - {e}")
+            continue
+
+        all_txns.extend(txns)
+        if not args.quiet:
+            print(f"  {source['name']}: {len(txns)} transactions")
+
+    if not all_txns:
+        print("Error: No transactions found", file=sys.stderr)
+        sys.exit(1)
+
+    # Auto-detect home location if not specified
+    if not home_locations:
+        from collections import Counter
+        # US state codes for filtering
+        us_states = {
+            'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+            'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+            'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+            'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+            'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+            'DC', 'PR', 'VI', 'GU'
+        }
+        # Count US state locations
+        location_counts = Counter(
+            txn['location'] for txn in all_txns
+            if txn.get('location') and txn['location'] in us_states
+        )
+        if location_counts:
+            # Most common location is likely home
+            detected_home = location_counts.most_common(1)[0][0]
+            home_locations = {detected_home}
+            if not args.quiet:
+                print(f"Auto-detected home location: {detected_home}")
+            # Update is_travel on transactions now that we know home
+            from .analyzer import is_travel_location
+            for txn in all_txns:
+                txn['is_travel'] = is_travel_location(txn.get('location'), home_locations)
+
+    if not args.quiet:
+        print(f"\nTotal: {len(all_txns)} transactions")
+        if home_locations:
+            print(f"Home locations: {', '.join(sorted(home_locations))}")
+
+    # Analyze
+    stats = analyze_transactions(all_txns)
+
+    # Print summary
+    print_summary(stats, year=year)
+
+    # Generate HTML unless --summary flag
+    if not args.summary:
+        # Determine output path
+        if args.output:
+            output_path = args.output
+        else:
+            output_dir = os.path.join(os.path.dirname(config_dir), config.get('output_dir', 'output'))
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, config.get('html_filename', 'spending_summary.html'))
+
+        write_summary_file(stats, output_path, year=year, home_locations=home_locations)
+        print(f"\nHTML report: {output_path}")
+
+
+def cmd_discover(args):
+    """Handle the 'discover' subcommand - find unknown merchants for rule creation."""
+    from collections import Counter, defaultdict
+    import re
+
+    # Determine config directory
+    if args.config:
+        config_dir = os.path.abspath(args.config)
+    else:
+        config_dir = os.path.abspath('config')
+
+    if not os.path.isdir(config_dir):
+        print(f"Error: Config directory not found: {config_dir}", file=sys.stderr)
+        print(f"\nRun 'budget-analyze init' to create a new budget directory.", file=sys.stderr)
+        sys.exit(1)
+
+    # Load configuration
+    try:
+        config = load_config(config_dir, args.settings)
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    home_locations = config.get('home_locations', set())
+
+    # Load merchant rules
+    rules_file = os.path.join(config_dir, 'merchant_categories.csv')
+    if os.path.exists(rules_file):
+        rules = get_all_rules(rules_file)
+    else:
+        rules = get_all_rules()
+
+    # Parse transactions from configured data sources
+    all_txns = []
+    data_sources = config.get('data_sources', [])
+
+    if not data_sources:
+        print("Error: No data sources configured in settings", file=sys.stderr)
+        sys.exit(1)
+
+    for source in data_sources:
+        filepath = os.path.join(config_dir, '..', source['file'])
+        filepath = os.path.normpath(filepath)
+
+        if not os.path.exists(filepath):
+            filepath = os.path.join(os.path.dirname(config_dir), source['file'])
+
+        if not os.path.exists(filepath):
+            continue
+
+        parser_type = source.get('_parser_type', source.get('type', '')).lower()
+        format_spec = source.get('_format_spec')
+
+        try:
+            if parser_type == 'amex':
+                txns = parse_amex(filepath, rules, home_locations)
+            elif parser_type == 'boa':
+                txns = parse_boa(filepath, rules, home_locations)
+            elif parser_type == 'generic' and format_spec:
+                txns = parse_generic_csv(filepath, format_spec, rules,
+                                         home_locations,
+                                         source_name=source.get('name', 'CSV'))
+            else:
+                continue
+        except Exception:
+            continue
+
+        all_txns.extend(txns)
+
+    if not all_txns:
+        print("Error: No transactions found", file=sys.stderr)
+        sys.exit(1)
+
+    # Find unknown transactions
+    unknown_txns = [t for t in all_txns if t.get('category') == 'Unknown']
+
+    if not unknown_txns:
+        print("No unknown transactions found! All merchants are categorized.")
+        sys.exit(0)
+
+    # Group by raw description and calculate stats
+    desc_stats = defaultdict(lambda: {'count': 0, 'total': 0.0, 'examples': []})
+
+    for txn in unknown_txns:
+        raw = txn.get('raw_description', txn.get('description', ''))
+        amount = abs(txn.get('amount', 0))
+        desc_stats[raw]['count'] += 1
+        desc_stats[raw]['total'] += amount
+        if len(desc_stats[raw]['examples']) < 3:
+            desc_stats[raw]['examples'].append(txn)
+
+    # Sort by total spend (descending)
+    sorted_descs = sorted(desc_stats.items(), key=lambda x: x[1]['total'], reverse=True)
+
+    # Limit output
+    limit = args.limit
+    if limit > 0:
+        sorted_descs = sorted_descs[:limit]
+
+    # Output format
+    if args.format == 'csv':
+        # CSV output for easy import
+        print("# Suggested rules for unknown merchants")
+        print("# Copy the lines you want to merchant_categories.csv")
+        print("Pattern,Merchant,Category,Subcategory")
+        print()
+
+        for raw_desc, stats in sorted_descs:
+            # Generate a suggested pattern
+            pattern = suggest_pattern(raw_desc)
+            # Generate a clean merchant name
+            merchant = suggest_merchant_name(raw_desc)
+            # Placeholder category - agent should fill in
+            print(f"{pattern},{merchant},CATEGORY,SUBCATEGORY  # ${stats['total']:.2f} ({stats['count']} txns)")
+
+    elif args.format == 'json':
+        import json
+        output = []
+        for raw_desc, stats in sorted_descs:
+            output.append({
+                'raw_description': raw_desc,
+                'suggested_pattern': suggest_pattern(raw_desc),
+                'suggested_merchant': suggest_merchant_name(raw_desc),
+                'count': stats['count'],
+                'total_spend': round(stats['total'], 2),
+                'examples': [
+                    {
+                        'date': str(t.get('date', '')),
+                        'amount': t.get('amount', 0),
+                        'description': t.get('description', '')
+                    }
+                    for t in stats['examples']
+                ]
+            })
+        print(json.dumps(output, indent=2))
+
+    else:
+        # Default: human-readable format
+        print(f"UNKNOWN MERCHANTS - Top {len(sorted_descs)} by spend")
+        print("=" * 80)
+        print(f"Total unknown: {len(unknown_txns)} transactions, ${sum(s['total'] for _, s in desc_stats.items()):.2f}")
+        print()
+
+        for i, (raw_desc, stats) in enumerate(sorted_descs, 1):
+            pattern = suggest_pattern(raw_desc)
+            merchant = suggest_merchant_name(raw_desc)
+
+            print(f"{i}. {raw_desc[:60]}")
+            print(f"   Count: {stats['count']} | Total: ${stats['total']:.2f}")
+            print(f"   Suggested pattern: {pattern}")
+            print(f"   Suggested merchant: {merchant}")
+            print(f"   CSV: {pattern},{merchant},CATEGORY,SUBCATEGORY")
+            print()
+
+
+def suggest_pattern(description):
+    """Generate a suggested regex pattern from a raw description."""
+    import re
+
+    desc = description.upper()
+
+    # Remove common suffixes that vary
+    desc = re.sub(r'\s+\d{4,}.*$', '', desc)  # Remove trailing numbers (store IDs)
+    desc = re.sub(r'\s+[A-Z]{2}$', '', desc)  # Remove trailing state codes
+    desc = re.sub(r'\s+\d{5}$', '', desc)  # Remove zip codes
+    desc = re.sub(r'\s+#\d+', '', desc)  # Remove store numbers like #1234
+
+    # Remove common prefixes
+    prefixes = ['APLPAY ', 'SQ *', 'TST*', 'SP ', 'PP*', 'GOOGLE *']
+    for prefix in prefixes:
+        if desc.startswith(prefix):
+            desc = desc[len(prefix):]
+
+    # Clean up
+    desc = desc.strip()
+
+    # Escape regex special characters but keep it readable
+    # Only escape characters that are common in descriptions
+    pattern = re.sub(r'([.*+?^${}()|[\]\\])', r'\\\1', desc)
+
+    # Simplify: take first 2-3 significant words
+    words = pattern.split()[:3]
+    if words:
+        pattern = r'\s*'.join(words)
+
+    return pattern
+
+
+def suggest_merchant_name(description):
+    """Generate a clean merchant name from a raw description."""
+    import re
+
+    desc = description
+
+    # Remove common prefixes
+    prefixes = ['APLPAY ', 'SQ *', 'TST*', 'TST* ', 'SP ', 'PP*', 'GOOGLE *']
+    for prefix in prefixes:
+        if desc.upper().startswith(prefix.upper()):
+            desc = desc[len(prefix):]
+
+    # Remove trailing IDs, numbers, locations
+    desc = re.sub(r'\s+\d{4,}.*$', '', desc)
+    desc = re.sub(r'\s+[A-Z]{2}$', '', desc, flags=re.IGNORECASE)
+    desc = re.sub(r'\s+\d{5}$', '', desc)
+    desc = re.sub(r'\s+#\d+', '', desc)
+    desc = re.sub(r'\s+DES:.*$', '', desc, flags=re.IGNORECASE)
+    desc = re.sub(r'\s+ID:.*$', '', desc, flags=re.IGNORECASE)
+
+    # Take first few words and title case
+    words = desc.split()[:3]
+    if words:
+        return ' '.join(words).title()
+
+    return 'Unknown'
+
+
+def cmd_inspect(args):
+    """Handle the 'inspect' subcommand - show CSV structure and sample rows."""
+    import csv
+
+    filepath = os.path.abspath(args.file)
+
+    if not os.path.exists(filepath):
+        print(f"Error: File not found: {filepath}", file=sys.stderr)
+        sys.exit(1)
+
+    num_rows = args.rows
+
+    print(f"Inspecting: {filepath}")
+    print("=" * 70)
+
+    with open(filepath, 'r', encoding='utf-8') as f:
+        # Detect if it's a valid CSV
+        try:
+            sample = f.read(4096)
+            f.seek(0)
+            dialect = csv.Sniffer().sniff(sample)
+            has_header = csv.Sniffer().has_header(sample)
+            f.seek(0)
+        except csv.Error:
+            print("Warning: Could not detect CSV dialect, using default")
+            dialect = None
+            has_header = True
+            f.seek(0)
+
+        reader = csv.reader(f, dialect) if dialect else csv.reader(f)
+
+        rows = []
+        for i, row in enumerate(reader):
+            rows.append(row)
+            if i >= num_rows:  # Get header + N data rows
+                break
+
+        if not rows:
+            print("File appears to be empty.")
+            return
+
+    # Display header info
+    if has_header and rows:
+        print("\nDetected Headers:")
+        print("-" * 70)
+        for idx, col in enumerate(rows[0]):
+            print(f"  Column {idx}: {col}")
+
+    # Display sample data
+    print(f"\nSample Data (first {min(num_rows, len(rows)-1)} rows):")
+    print("-" * 70)
+
+    data_rows = rows[1:] if has_header else rows
+    for row_num, row in enumerate(data_rows[:num_rows], start=1):
+        print(f"\nRow {row_num}:")
+        for idx, val in enumerate(row):
+            header = rows[0][idx] if has_header and idx < len(rows[0]) else f"Col {idx}"
+            # Truncate long values
+            display_val = val[:50] + "..." if len(val) > 50 else val
+            print(f"  [{idx}] {header}: {display_val}")
+
+    # Attempt auto-detection
+    print("\n" + "=" * 70)
+    print("Auto-Detection Results:")
+    print("-" * 70)
+
+    try:
+        spec = auto_detect_csv_format(filepath)
+        print("  Successfully detected format!")
+        print(f"  - Date column: {spec.date_column} (format: {spec.date_format})")
+        print(f"  - Description column: {spec.description_column}")
+        print(f"  - Amount column: {spec.amount_column}")
+        if spec.location_column is not None:
+            print(f"  - Location column: {spec.location_column}")
+
+        # Build suggested format string
+        max_col = max(spec.date_column, spec.description_column, spec.amount_column)
+        if spec.location_column is not None:
+            max_col = max(max_col, spec.location_column)
+
+        cols = []
+        for i in range(max_col + 1):
+            if i == spec.date_column:
+                cols.append(f'{{date:{spec.date_format}}}')
+            elif i == spec.description_column:
+                cols.append('{description}')
+            elif i == spec.amount_column:
+                cols.append('{amount}')
+            elif spec.location_column is not None and i == spec.location_column:
+                cols.append('{location}')
+            else:
+                cols.append('{_}')
+
+        format_str = ', '.join(cols)
+        print(f"\n  Suggested format string:")
+        print(f'    format: "{format_str}"')
+
+    except ValueError as e:
+        print(f"  Could not auto-detect: {e}")
+        print("\n  Use a manual format string. Example:")
+        print('    format: "{date:%m/%d/%Y}, {description}, {amount}"')
+
+    print()
+
+
+def main():
+    """Main entry point for budget-analyze CLI."""
+    parser = argparse.ArgumentParser(
+        prog='budget-analyze',
+        description='Analyze credit card and bank statements with automatic merchant categorization.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Commands:
+  init [dir]       Create a new budget directory with starter config files
+  run [config]     Analyze transactions and generate spending report
+  inspect <file>   Show CSV structure and suggest format string
+  discover [config]  Find unknown merchants and suggest rules
+
+Examples:
+  budget-analyze init                 Initialize in current directory
+  budget-analyze init ./my-budget     Initialize in specified directory
+  budget-analyze run                  Run analysis (uses ./config)
+  budget-analyze run ./my-budget/config   Run with specific config
+  budget-analyze run --summary        Show summary only, no HTML report
+  budget-analyze inspect data/bank.csv  Inspect CSV to determine format
+  budget-analyze discover             Find unknown merchants, suggest rules
+  budget-analyze discover --format json  JSON output for agents
+'''
+    )
+
+    subparsers = parser.add_subparsers(dest='command', title='commands')
+
+    # init subcommand
+    init_parser = subparsers.add_parser(
+        'init',
+        help='Create a new budget directory with starter config files',
+        description='Initialize a new budget directory with settings, merchant categories, and documentation.'
+    )
+    init_parser.add_argument(
+        'dir',
+        nargs='?',
+        default='.',
+        help='Directory to initialize (default: current directory)'
+    )
+
+    # run subcommand
+    run_parser = subparsers.add_parser(
+        'run',
+        help='Analyze transactions and generate spending report',
+        description='Run the budget analyzer on your transaction data.'
+    )
+    run_parser.add_argument(
+        'config',
+        nargs='?',
+        help='Path to config directory (default: ./config)'
+    )
+    run_parser.add_argument(
+        '--settings', '-s',
+        default='settings.yaml',
+        help='Settings file name (default: settings.yaml)'
+    )
+    run_parser.add_argument(
+        '--summary',
+        action='store_true',
+        help='Print summary only, do not generate HTML'
+    )
+    run_parser.add_argument(
+        '--output', '-o',
+        help='Override output file path'
+    )
+    run_parser.add_argument(
+        '--quiet', '-q',
+        action='store_true',
+        help='Minimal output'
+    )
+
+    # inspect subcommand
+    inspect_parser = subparsers.add_parser(
+        'inspect',
+        help='Inspect a CSV file to determine column structure',
+        description='Show headers and sample rows from a CSV file, with auto-detection suggestions.'
+    )
+    inspect_parser.add_argument(
+        'file',
+        help='Path to the CSV file to inspect'
+    )
+    inspect_parser.add_argument(
+        '--rows', '-n',
+        type=int,
+        default=5,
+        help='Number of sample rows to display (default: 5)'
+    )
+
+    # discover subcommand
+    discover_parser = subparsers.add_parser(
+        'discover',
+        help='Find unknown merchants and suggest categorization rules',
+        description='Analyze transactions to find unknown merchants, sorted by spend. '
+                    'Outputs suggested patterns for merchant_categories.csv.'
+    )
+    discover_parser.add_argument(
+        'config',
+        nargs='?',
+        help='Path to config directory (default: ./config)'
+    )
+    discover_parser.add_argument(
+        '--settings', '-s',
+        default='settings.yaml',
+        help='Settings file name (default: settings.yaml)'
+    )
+    discover_parser.add_argument(
+        '--limit', '-n',
+        type=int,
+        default=20,
+        help='Maximum number of unknown merchants to show (default: 20, 0 for all)'
+    )
+    discover_parser.add_argument(
+        '--format', '-f',
+        choices=['text', 'csv', 'json'],
+        default='text',
+        help='Output format: text (human readable), csv (for import), json (for agents)'
+    )
+
+    args = parser.parse_args()
+
+    # If no command specified, show help
+    if args.command is None:
+        parser.print_help()
+        sys.exit(0)
+
+    # Dispatch to command handler
+    if args.command == 'init':
+        cmd_init(args)
+    elif args.command == 'run':
+        cmd_run(args)
+    elif args.command == 'inspect':
+        cmd_inspect(args)
+    elif args.command == 'discover':
+        cmd_discover(args)
+
+
+if __name__ == '__main__':
+    main()

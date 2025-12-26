@@ -1,0 +1,61 @@
+Pattern,Merchant,Category,Subcategory
+# ============================================================================
+# TRANSFERS & PAYMENTS (exclude from spending totals)
+# ============================================================================
+VENMO,Venmo,Transfers,P2P
+PAYPAL,PayPal,Transfers,P2P
+ZELLE,Zelle,Transfers,P2P
+AMERICAN EXPRESS,American Express,Transfers,CC Payment
+
+# ============================================================================
+# TRAVEL
+# ============================================================================
+ALASKA AIR|ALASKA AIRLINES,Alaska Airlines,Travel,Airline
+AMERICAN AIR|AMERICAN AIRLINES,American Airlines,Travel,Airline
+UNITED AIR|UNITED AIRLINES,United Airlines,Travel,Airline
+DELTA AIR|DELTA AIRLINES,Delta Airlines,Travel,Airline
+SOUTHWEST,Southwest Airlines,Travel,Airline
+MARRIOTT,Marriott,Travel,Lodging
+HILTON,Hilton,Travel,Lodging
+HYATT,Hyatt,Travel,Lodging
+
+# ============================================================================
+# SUBSCRIPTIONS
+# ============================================================================
+NETFLIX,Netflix,Subscriptions,Streaming
+SPOTIFY,Spotify,Subscriptions,Streaming
+HULU(?!.*KAHULUI),Hulu,Subscriptions,Streaming
+DISNEY\+|DISNEYPLUS,Disney+,Subscriptions,Streaming
+AMAZON PRIME,Amazon Prime,Subscriptions,Membership
+GITHUB,GitHub,Subscriptions,Software
+
+# ============================================================================
+# FOOD & DINING
+# ============================================================================
+DOORDASH|DD\s*\*,DoorDash,Food,Delivery
+UBER\s*EATS,Uber Eats,Food,Delivery
+GRUBHUB,Grubhub,Food,Delivery
+STARBUCKS,Starbucks,Food,Coffee
+CHIPOTLE,Chipotle,Food,Fast Casual
+MCDONALD,McDonald's,Food,Fast Food
+COSTCO,Costco,Food,Grocery
+SAFEWAY,Safeway,Food,Grocery
+TRADER JOE,Trader Joe's,Food,Grocery
+WHOLE FOODS,Whole Foods,Food,Grocery
+
+# ============================================================================
+# SHOPPING
+# ============================================================================
+AMAZON(?!.*PRIME),Amazon,Shopping,Online
+TARGET,Target,Shopping,Retail
+WALMART,Walmart,Shopping,Retail
+BEST BUY,Best Buy,Shopping,Electronics
+APPLE\.COM|APPLE STORE,Apple,Shopping,Electronics
+
+# ============================================================================
+# BILLS & UTILITIES
+# ============================================================================
+COMCAST|XFINITY,Comcast/Xfinity,Bills,Internet
+AT&T|ATT\s,AT&T,Bills,Phone
+VERIZON,Verizon,Bills,Phone
+PG&E|PACIFIC GAS,PG&E,Utilities,Electric

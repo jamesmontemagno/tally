@@ -1,0 +1,24 @@
+# Budget Analyzer Configuration
+# ==============================
+# Copy this file to settings.yaml and customize for your data.
+
+# Time period for analysis
+year: 2025
+title: "Spending Analysis"
+
+# Data sources - list of transaction files to process
+# Paths are relative to the parent of the config directory
+data_sources:
+  - name: AMEX
+    file: data/amex-2025.csv
+    type: amex
+  - name: BOA
+    file: data/boa-checking.txt
+    type: boa
+
+# Location settings
+home_state: WA  # Used for badge coloring (green for home state)
+
+# Output settings
+output_dir: output
+html_filename: spending_summary.html
