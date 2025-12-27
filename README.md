@@ -1,6 +1,8 @@
 # Tally
 
-**Let AI classify your transactions.** LLM-powered spending categorization.
+**A local rule engine for transaction classification.** Pair it with an LLM to eliminate the manual work.
+
+Works with Claude Code, Codex, Copilot, Cursor, or a local model.
 
 👉 **[Website](https://tallyai.money)** · **[Releases](https://github.com/davidfowl/tally/releases)**
 
