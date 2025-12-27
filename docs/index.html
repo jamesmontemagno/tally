@@ -312,6 +312,19 @@
             padding: 0.5rem 0;
         }
 
+        .report-preview {
+            margin-top: 1.5rem;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.1);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+
+        .report-preview img {
+            width: 100%;
+            display: block;
+        }
+
         .open-source {
             text-align: center;
             margin-bottom: 2rem;
@@ -462,6 +475,10 @@
                     <div class="step-cmd">tally run</div>
                     <div class="step-desc">Generates HTML spending report with all transactions categorized</div>
                 </div>
+            </div>
+
+            <div class="report-preview">
+                <img src="screenshot.png" alt="Tally spending report showing monthly budget, recurring expenses, and transaction categories">
             </div>
         </div>
 
