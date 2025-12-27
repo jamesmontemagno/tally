@@ -1677,7 +1677,7 @@ def cmd_update(args):
             # Already updated assets, just note that binary update isn't possible from source
             print("\nNote: Binary self-update not available when running from source.")
         else:
-            print(f"\n✗ Cannot self-update when running from source. Use: uv pip install --upgrade tally")
+            print(f"\n✗ Cannot self-update when running from source. Use: uv tool upgrade tally")
             sys.exit(1)
         sys.exit(0)
 

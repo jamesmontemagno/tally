@@ -245,7 +245,7 @@ def perform_update(release_info: dict, force: bool = False) -> tuple[bool, str]:
 
     # Check if running from source (not frozen)
     if not getattr(__import__('sys'), 'frozen', False):
-        return False, "Cannot self-update when running from source. Use: uv pip install --upgrade tally"
+        return False, "Cannot self-update when running from source. Use: uv tool upgrade tally"
 
     system = plat.system().lower()
     binary_name = 'tally.exe' if system == 'windows' else 'tally'
