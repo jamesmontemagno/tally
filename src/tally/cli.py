@@ -1629,7 +1629,7 @@ Examples:
 '''
     )
 
-    subparsers = parser.add_subparsers(dest='command', title='commands')
+    subparsers = parser.add_subparsers(dest='command', title='commands', metavar='<command>')
 
     # init subcommand
     init_parser = subparsers.add_parser(
