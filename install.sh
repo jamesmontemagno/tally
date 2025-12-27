@@ -83,18 +83,67 @@ main() {
     # Cleanup
     rm -rf "$DOWNLOAD_PATH"
 
-    # Verify and show PATH instructions
-    info "Successfully installed tally to ${INSTALL_DIR}/tally"
+    # Verify installation
+    info "Successfully installed tally!"
     "${INSTALL_DIR}/tally" version
 
+    # Add to PATH if not already there
     if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
-        echo ""
-        warn "Add tally to your PATH by adding this to your shell profile:"
-        echo ""
-        echo "  export PATH=\"\$HOME/.tally/bin:\$PATH\""
-        echo ""
-        echo "Then restart your terminal or run: source ~/.bashrc (or ~/.zshrc)"
+        add_to_path
     fi
+}
+
+# Detect shell and add to appropriate config file
+add_to_path() {
+    local shell_name
+    shell_name=$(basename "${SHELL:-/bin/bash}")
+
+    local config_file=""
+    local path_line=""
+
+    case "$shell_name" in
+        bash)
+            if [[ -f "$HOME/.bashrc" ]]; then
+                config_file="$HOME/.bashrc"
+            elif [[ -f "$HOME/.bash_profile" ]]; then
+                config_file="$HOME/.bash_profile"
+            else
+                config_file="$HOME/.bashrc"
+            fi
+            path_line='export PATH="$HOME/.tally/bin:$PATH"'
+            ;;
+        zsh)
+            config_file="${ZDOTDIR:-$HOME}/.zshrc"
+            path_line='export PATH="$HOME/.tally/bin:$PATH"'
+            ;;
+        fish)
+            config_file="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+            path_line='fish_add_path $HOME/.tally/bin'
+            ;;
+        *)
+            # Fallback to .profile for other POSIX shells
+            config_file="$HOME/.profile"
+            path_line='export PATH="$HOME/.tally/bin:$PATH"'
+            ;;
+    esac
+
+    # Create config file directory if needed
+    mkdir -p "$(dirname "$config_file")"
+
+    # Check if already added
+    if [[ -f "$config_file" ]] && grep -q "/.tally/bin" "$config_file" 2>/dev/null; then
+        return
+    fi
+
+    # Add to config file
+    echo "" >> "$config_file"
+    echo "# Added by tally installer" >> "$config_file"
+    echo "$path_line" >> "$config_file"
+
+    info "Added tally to PATH in $config_file"
+    echo ""
+    echo "Restart your terminal or run:"
+    echo "  source $config_file"
 }
 
 main "$@"
