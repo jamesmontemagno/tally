@@ -34,11 +34,37 @@ tally run                    # Generate spending report
 |---------|-------------|
 | `tally init [dir]` | Set up a new budget folder |
 | `tally run` | Parse transactions and generate HTML report |
+| `tally run --format json` | Output analysis as JSON with reasoning |
+| `tally explain` | Explain why merchants are classified the way they are |
+| `tally explain <merchant>` | Explain specific merchant's classification |
 | `tally discover` | Find uncategorized transactions (`--format json` for LLMs) |
 | `tally inspect <csv>` | Show CSV structure to build format string |
 | `tally diag` | Debug config issues |
 | `tally version` | Show version and check for updates |
 | `tally update` | Update to latest version |
+
+### Output Formats
+
+Both `tally run` and `tally explain` support multiple output formats:
+
+```bash
+tally run --format json        # JSON with classification reasoning
+tally run --format markdown    # Markdown report
+tally run --format summary     # Text summary only
+tally run -v                   # Verbose: include decision trace
+tally run -vv                  # Very verbose: include thresholds, CV values
+```
+
+### Filtering
+
+Filter output to specific classifications or categories:
+
+```bash
+tally run --format json --only monthly,variable   # Just these classifications
+tally run --format json --category Food           # Just Food category
+tally explain --classification monthly            # Explain all monthly merchants
+tally explain --category Subscriptions            # Explain all subscriptions
+```
 
 ## Configuration
 
@@ -104,6 +130,27 @@ Patterns are Python regex (case-insensitive). First match wins.
 ## For AI Agents
 
 Run `tally init` to generate `AGENTS.md` with detailed instructions. Key commands:
+
+**Analysis & Reasoning:**
+- `tally run --format json -v` - Full analysis with classification reasoning
+- `tally explain <merchant>` - Why a specific merchant is classified
+- `tally explain <merchant> -vv` - Full details including which rule matched
+- `tally explain --classification variable` - Explain all variable merchants
+
+**Example: tally explain -vv Output:**
+```
+Netflix → Monthly
+  Monthly: Subscriptions appears 6/6 months (50% threshold = 3)
+
+  Decision trace:
+    ✗ NOT excluded: Subscriptions not in [Transfers, Cash, Income]
+    ✓ IS monthly: Subscriptions with 6/6 months (>= 3 bill threshold)
+
+  Calculation: avg (CV=0.00 (<0.3), payments are consistent)
+  Rule: NETFLIX.* (user)   # Shows pattern and source (user/baseline)
+```
+
+**Discovery & Debugging:**
 - `tally discover --format json` - Structured unknown merchant data
 - `tally diag --format json` - Debug configuration
 - `tally inspect <file>` - Analyze CSV format

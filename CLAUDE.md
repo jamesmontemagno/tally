@@ -7,11 +7,37 @@ Project-specific guidance for Claude when working on this codebase.
 ```bash
 uv run tally --help              # Show all commands
 uv run tally run /path/to/config # Run analysis
+uv run tally run --format json -v /path/to/config  # JSON output with reasoning
+uv run tally explain /path/to/config               # Classification summary
+uv run tally explain Netflix /path/to/config       # Explain specific merchant
+uv run tally explain Netflix -vv /path/to/config   # Full details + which rule matched
+uv run tally explain -c monthly /path/to/config    # Explain all monthly merchants
 uv run tally diag /path/to/config # Debug config issues
 uv run tally discover /path/to/config # Find unknown merchants
 uv run tally inspect file.csv    # Analyze CSV structure
 uv run pytest tests/             # Run all tests
 uv run pytest tests/test_analyzer.py -v # Run analyzer tests
+```
+
+## Example: tally explain Output
+
+```bash
+$ tally explain Netflix -vv
+Netflix → Monthly
+  Monthly: Subscriptions appears 6/6 months (50% threshold = 3)
+
+  Decision trace:
+    ✗ NOT excluded: Subscriptions not in [Transfers, Cash, Income]
+    ✗ NOT travel: category=Subscriptions, is_travel=false
+    ✗ NOT annual: (Subscriptions, Streaming) not in annual categories
+    ✗ NOT periodic: no periodic patterns matched
+    ✓ IS monthly: Subscriptions with 6/6 months (>= 3 bill threshold)
+
+  Calculation: avg (CV=0.00 (<0.3), payments are consistent)
+    Formula: avg_when_active = 95.94 / 6 months = 15.99
+    CV: 0.00
+
+  Rule: NETFLIX.* (user)   # Shows which pattern matched and source (user/baseline)
 ```
 
 ## Core Files

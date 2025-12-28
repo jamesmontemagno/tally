@@ -167,7 +167,7 @@ def parse_amex(filepath, rules, home_locations=None):
                 amount = abs(amount)
 
                 date = datetime.strptime(row['Date'], '%m/%d/%Y')
-                merchant, category, subcategory = normalize_merchant(
+                merchant, category, subcategory, match_info = normalize_merchant(
                     row['Description'], rules, amount=amount, txn_date=date.date()
                 )
                 location = extract_location(row['Description'])
@@ -181,7 +181,8 @@ def parse_amex(filepath, rules, home_locations=None):
                     'subcategory': subcategory,
                     'source': 'AMEX',
                     'location': location,
-                    'is_travel': is_travel_location(location, home_locations)
+                    'is_travel': is_travel_location(location, home_locations),
+                    'match_info': match_info,
                 })
             except (ValueError, KeyError):
                 continue
@@ -212,7 +213,7 @@ def parse_boa(filepath, rules, home_locations=None):
                 if amount >= 0:  # Skip credits/income
                     continue
 
-                merchant, category, subcategory = normalize_merchant(
+                merchant, category, subcategory, match_info = normalize_merchant(
                     description, rules, amount=abs(amount), txn_date=date.date()
                 )
                 location = extract_location(description)
@@ -222,6 +223,7 @@ def parse_boa(filepath, rules, home_locations=None):
                     'description': description,
                     'amount': abs(amount),
                     'merchant': merchant,
+                    'match_info': match_info,
                     'category': category,
                     'subcategory': subcategory,
                     'source': 'BOA',
@@ -319,7 +321,7 @@ def parse_generic_csv(filepath, format_spec, rules, home_locations=None, source_
                     location = extract_location(description)
 
                 # Normalize merchant
-                merchant, category, subcategory = normalize_merchant(
+                merchant, category, subcategory, match_info = normalize_merchant(
                     description, rules, amount=amount, txn_date=date.date()
                 )
 
@@ -334,7 +336,8 @@ def parse_generic_csv(filepath, format_spec, rules, home_locations=None, source_
                     'source': format_spec.source_name or source_name,
                     'location': location,
                     'is_travel': is_travel_location(location, home_locations),
-                    'is_credit': is_credit
+                    'is_credit': is_credit,
+                    'match_info': match_info,
                 })
 
             except (ValueError, IndexError):
@@ -441,7 +444,7 @@ def classify_by_occurrence(merchant, data, num_months=12):
         data: Transaction data dictionary
         num_months: Total months of data available (for proportional thresholds)
 
-    Returns: classification string
+    Returns: tuple of (classification_string, reasoning_dict)
     """
     category = data['category']
     subcategory = data['subcategory']
@@ -451,20 +454,53 @@ def classify_by_occurrence(merchant, data, num_months=12):
     cv = data.get('cv', 0)  # Coefficient of variation
     max_payment = data.get('max_payment', 0)
     avg_per_txn = total / count if count > 0 else 0
+    is_consistent = data.get('is_consistent', True)
+
+    # Build reasoning structure
+    reasoning = {
+        'trace': [],
+        'thresholds': {},
+        'decision': '',
+        'category': category,
+        'subcategory': subcategory,
+        'months_active': months_active,
+        'num_months': num_months,
+        'cv': round(cv, 2),
+        'is_consistent': is_consistent,
+    }
+
+    # Calculate thresholds upfront for tracing
+    bill_threshold = max(2, int(num_months * 0.5))
+    general_threshold = max(3, int(num_months * 0.75))
+    reasoning['thresholds'] = {
+        'bill_threshold': bill_threshold,
+        'general_threshold': general_threshold,
+    }
 
     # =========================================================================
     # EXCLUDED: Transfers, payments, cash, income
     # =========================================================================
     if category in ('Transfers', 'Cash', 'Income'):
-        return 'excluded'
+        reasoning['trace'].append(f"✓ IS excluded: {category} in [Transfers, Cash, Income]")
+        reasoning['decision'] = f"Excluded: {category} category"
+        return ('excluded', reasoning)
+    reasoning['trace'].append(f"✗ NOT excluded: {category} not in [Transfers, Cash, Income]")
 
     # =========================================================================
     # TRAVEL: Either explicit travel category OR location-based travel flag
     # - category='Travel' from merchant rules (airlines, hotels, etc.)
     # - is_travel=True from international location detection
     # =========================================================================
-    if category == 'Travel' or data.get('is_travel'):
-        return 'travel'
+    is_travel = data.get('is_travel', False)
+    if category == 'Travel' or is_travel:
+        if category == 'Travel':
+            reasoning['trace'].append(f"✓ IS travel: category=Travel")
+            reasoning['decision'] = "Travel: category is Travel"
+        else:
+            reasoning['trace'].append(f"✓ IS travel: is_travel=true (location-based)")
+            reasoning['decision'] = "Travel: international location detected"
+        return ('travel', reasoning)
+    reasoning['trace'].append(f"✗ NOT travel: category={category}, is_travel=false")
 
     # =========================================================================
     # ANNUAL BILLS: True once-a-year expenses
@@ -484,7 +520,13 @@ def classify_by_occurrence(merchant, data, num_months=12):
     }
     if (category, subcategory) in annual_categories:
         if months_active <= 2 and count <= 2:
-            return 'annual'
+            reasoning['trace'].append(f"✓ IS annual: ({category}, {subcategory}) in annual categories, {months_active} months, {count} txns")
+            reasoning['decision'] = f"Annual: {category}>{subcategory} with {count} transaction(s) in {months_active} month(s)"
+            return ('annual', reasoning)
+        else:
+            reasoning['trace'].append(f"✗ NOT annual: ({category}, {subcategory}) is annual category but {months_active} months > 2 or {count} txns > 2")
+    else:
+        reasoning['trace'].append(f"✗ NOT annual: ({category}, {subcategory}) not in annual categories")
 
     # =========================================================================
     # PERIODIC RECURRING: Regular non-monthly bills
@@ -497,16 +539,22 @@ def classify_by_occurrence(merchant, data, num_months=12):
     # =========================================================================
     # Education/Tuition is inherently periodic (school year pattern)
     if category == 'Education' and subcategory == 'Tuition':
-        return 'periodic'
+        reasoning['trace'].append(f"✓ IS periodic: Education>Tuition (inherently periodic)")
+        reasoning['decision'] = "Periodic: Tuition follows school year pattern"
+        return ('periodic', reasoning)
 
     # Quarterly insurance (appears 3+ months)
     if category == 'Bills' and subcategory == 'Insurance' and months_active >= 3:
-        return 'periodic'
+        reasoning['trace'].append(f"✓ IS periodic: Bills>Insurance with {months_active} months (quarterly pattern)")
+        reasoning['decision'] = f"Periodic: Insurance with {months_active} months of payments (quarterly)"
+        return ('periodic', reasoning)
 
     # Medical/dental treatments that span multiple visits
     if category == 'Health' and subcategory in ('Medical', 'Dental', 'Orthodontics'):
         if months_active >= 2 or count >= 2:
-            return 'periodic'
+            reasoning['trace'].append(f"✓ IS periodic: Health>{subcategory} with {months_active} months, {count} visits")
+            reasoning['decision'] = f"Periodic: {subcategory} treatment series ({count} visits over {months_active} months)"
+            return ('periodic', reasoning)
 
     # High-value lumpy payments that are bill-like (high CV pattern)
     if total > 5000 and max_payment > 1000:
@@ -515,7 +563,11 @@ def classify_by_occurrence(merchant, data, num_months=12):
             if max_avg_ratio > 3:
                 # Only if it's a bill-type category
                 if category in ('Bills', 'Education', 'Health'):
-                    return 'periodic'
+                    reasoning['trace'].append(f"✓ IS periodic: high-value lumpy (total>${total:.0f}, CV={cv:.2f}, max/avg={max_avg_ratio:.1f})")
+                    reasoning['decision'] = f"Periodic: High-value lumpy payments (CV={cv:.2f} > 0.8)"
+                    return ('periodic', reasoning)
+
+    reasoning['trace'].append(f"✗ NOT periodic: no periodic patterns matched")
 
     # =========================================================================
     # MONTHLY: Appears in 50%+ of available months (min 2) for bills/utilities,
@@ -523,29 +575,42 @@ def classify_by_occurrence(merchant, data, num_months=12):
     # Only bills, utilities, subscriptions, and essential services count
     # Shopping and restaurants are ALWAYS variable, no matter how frequent
     # =========================================================================
-    # More lenient threshold for inherently recurring bill categories
-    bill_threshold = max(2, int(num_months * 0.5))
-    general_threshold = max(3, int(num_months * 0.75))
 
     # Bills, utilities, subscriptions are inherently recurring - use lenient threshold
     if category in ('Bills', 'Utilities', 'Subscriptions') and months_active >= bill_threshold:
-        return 'monthly'
+        reasoning['trace'].append(f"✓ IS monthly: {category} with {months_active}/{num_months} months (>= {bill_threshold} bill threshold)")
+        reasoning['decision'] = f"Monthly: {category} appears {months_active}/{num_months} months (50% threshold = {bill_threshold})"
+        return ('monthly', reasoning)
 
     if months_active >= general_threshold:
         # These categories are true monthly recurring expenses
         if category in ('Bills', 'Utilities', 'Subscriptions'):
-            return 'monthly'
+            reasoning['trace'].append(f"✓ IS monthly: {category} with {months_active}/{num_months} months (>= {general_threshold} general threshold)")
+            reasoning['decision'] = f"Monthly: {category} appears {months_active}/{num_months} months (75% threshold = {general_threshold})"
+            return ('monthly', reasoning)
         # Essential services that recur monthly
         if category == 'Home' and subcategory in ('Lawn', 'Security', 'Cleaning'):
-            return 'monthly'
+            reasoning['trace'].append(f"✓ IS monthly: Home>{subcategory} service with {months_active}/{num_months} months")
+            reasoning['decision'] = f"Monthly: {subcategory} service appears {months_active}/{num_months} months"
+            return ('monthly', reasoning)
         if category == 'Health' and subcategory in ('Gym', 'Fitness', 'Pharmacy'):
-            return 'monthly'
+            reasoning['trace'].append(f"✓ IS monthly: Health>{subcategory} with {months_active}/{num_months} months")
+            reasoning['decision'] = f"Monthly: {subcategory} appears {months_active}/{num_months} months"
+            return ('monthly', reasoning)
         if category == 'Food' and subcategory in ('Grocery', 'Delivery'):
-            return 'monthly'
+            reasoning['trace'].append(f"✓ IS monthly: Food>{subcategory} with {months_active}/{num_months} months")
+            reasoning['decision'] = f"Monthly: {subcategory} appears {months_active}/{num_months} months"
+            return ('monthly', reasoning)
         if category == 'Transport' and subcategory in ('Gas', 'Parking', 'Transit'):
-            return 'monthly'
+            reasoning['trace'].append(f"✓ IS monthly: Transport>{subcategory} with {months_active}/{num_months} months")
+            reasoning['decision'] = f"Monthly: {subcategory} appears {months_active}/{num_months} months"
+            return ('monthly', reasoning)
         if category == 'Personal' and subcategory in ('Childcare', 'Services', 'Grooming'):
-            return 'monthly'
+            reasoning['trace'].append(f"✓ IS monthly: Personal>{subcategory} with {months_active}/{num_months} months")
+            reasoning['decision'] = f"Monthly: {subcategory} appears {months_active}/{num_months} months"
+            return ('monthly', reasoning)
+
+    reasoning['trace'].append(f"✗ NOT monthly: {months_active}/{num_months} months, category={category}>{subcategory}")
 
     # =========================================================================
     # ONE-OFF: High-value infrequent purchases
@@ -560,7 +625,9 @@ def classify_by_occurrence(merchant, data, num_months=12):
 
     # Procedure subcategory is always one-off (regardless of frequency)
     if subcategory == 'Procedure':
-        return 'one_off'
+        reasoning['trace'].append(f"✓ IS one-off: subcategory=Procedure (always one-off)")
+        reasoning['decision'] = "One-off: Medical/cosmetic procedure"
+        return ('one_off', reasoning)
 
     one_off_categories = ('Shopping', 'Home', 'Personal')
     one_off_subcategories = (
@@ -570,16 +637,24 @@ def classify_by_occurrence(merchant, data, num_months=12):
     if months_active <= 3 and total > 1000:
         # Shopping or home categories are one-off purchases
         if category in one_off_categories:
-            return 'one_off'
+            reasoning['trace'].append(f"✓ IS one-off: {category} with ${total:.0f} total in {months_active} months")
+            reasoning['decision'] = f"One-off: {category} purchase (${total:.0f} in {months_active} months)"
+            return ('one_off', reasoning)
         # Specific subcategories that are one-off
         if subcategory in one_off_subcategories:
-            return 'one_off'
+            reasoning['trace'].append(f"✓ IS one-off: subcategory={subcategory} with ${total:.0f} total")
+            reasoning['decision'] = f"One-off: {subcategory} purchase (${total:.0f})"
+            return ('one_off', reasoning)
+
+    reasoning['trace'].append(f"✗ NOT one-off: doesn't match one-off criteria")
 
     # =========================================================================
     # VARIABLE: Everything else (discretionary spending)
     # Shopping, restaurants, entertainment - even if frequent
     # =========================================================================
-    return 'variable'
+    reasoning['trace'].append(f"✓ IS variable: default classification (discretionary)")
+    reasoning['decision'] = f"Variable: {category}>{subcategory} is discretionary spending"
+    return ('variable', reasoning)
 
 
 def analyze_transactions(transactions):
@@ -626,6 +701,9 @@ def analyze_transactions(transactions):
         # Mark merchant as travel if ANY transaction is travel (location-based)
         if txn.get('is_travel'):
             by_merchant[txn['merchant']]['is_travel'] = True
+        # Store match info (pattern that matched) - first transaction sets this
+        if 'match_info' not in by_merchant[txn['merchant']] and txn.get('match_info'):
+            by_merchant[txn['merchant']]['match_info'] = txn['match_info']
 
         by_month[month_key] += txn['amount']
 
@@ -663,7 +741,10 @@ def analyze_transactions(transactions):
     variable_merchants = {}  # Discretionary
 
     for merchant, data in by_merchant.items():
-        classification = classify_by_occurrence(merchant, data, num_months)
+        classification, reasoning = classify_by_occurrence(merchant, data, num_months)
+        # Store reasoning in merchant data for later access
+        data['classification'] = classification
+        data['reasoning'] = reasoning
         if classification == 'monthly':
             monthly_merchants[merchant] = data
         elif classification == 'annual':
@@ -688,7 +769,7 @@ def analyze_transactions(transactions):
     variable_total = sum(d['total'] for d in variable_merchants.values())
 
     # =========================================================================
-    # CALCULATE TRUE MONTHLY AVERAGES
+    # CALCULATE TRUE MONTHLY AVERAGES (with reasoning)
     # =========================================================================
 
     # Monthly recurring: use avg when active for CONSISTENT payments,
@@ -697,24 +778,71 @@ def analyze_transactions(transactions):
     for data in monthly_merchants.values():
         if data['is_consistent']:
             # Consistent payments: use average when active
-            monthly_avg += data['avg_when_active']
+            monthly_value = data['avg_when_active']
+            data['calc_type'] = 'avg'
+            data['calc_reasoning'] = f"CV={data['cv']:.2f} (<0.3), payments are consistent"
+            data['calc_formula'] = f"avg_when_active = {data['total']:.2f} / {data['months_active']} months = {monthly_value:.2f}"
         else:
             # Lumpy payments: use YTD/12 for budgeting
-            monthly_avg += data['total'] / 12
+            monthly_value = data['total'] / 12
+            data['calc_type'] = '/12'
+            data['calc_reasoning'] = f"CV={data['cv']:.2f} (>=0.3), payments vary significantly"
+            data['calc_formula'] = f"total / 12 = {data['total']:.2f} / 12 = {monthly_value:.2f}"
+        data['monthly_value'] = monthly_value
+        monthly_avg += monthly_value
 
     # Annual bills: divide by 12 to get monthly equivalent
     annual_monthly = annual_total / 12
+    for data in annual_merchants.values():
+        monthly_value = data['total'] / 12
+        data['calc_type'] = '/12'
+        data['calc_reasoning'] = "Annual bill: spread over 12 months"
+        data['calc_formula'] = f"total / 12 = {data['total']:.2f} / 12 = {monthly_value:.2f}"
+        data['monthly_value'] = monthly_value
 
     # Periodic bills: divide by 12 to get monthly equivalent
     periodic_monthly = periodic_total / 12
+    for data in periodic_merchants.values():
+        monthly_value = data['total'] / 12
+        data['calc_type'] = '/12'
+        data['calc_reasoning'] = "Periodic bill: spread over 12 months"
+        data['calc_formula'] = f"total / 12 = {data['total']:.2f} / 12 = {monthly_value:.2f}"
+        data['monthly_value'] = monthly_value
+
+    # Travel: divide by 12 (not budgeted monthly)
+    for data in travel_merchants.values():
+        monthly_value = data['total'] / 12
+        data['calc_type'] = '/12'
+        data['calc_reasoning'] = "Travel: spread over 12 months for budgeting"
+        data['calc_formula'] = f"total / 12 = {data['total']:.2f} / 12 = {monthly_value:.2f}"
+        data['monthly_value'] = monthly_value
+
+    # One-off: divide by 12 (not budgeted monthly)
+    for data in one_off_merchants.values():
+        monthly_value = data['total'] / 12
+        data['calc_type'] = '/12'
+        data['calc_reasoning'] = "One-off: spread over 12 months for budgeting"
+        data['calc_formula'] = f"total / 12 = {data['total']:.2f} / 12 = {monthly_value:.2f}"
+        data['monthly_value'] = monthly_value
 
     # Variable: use average when active for frequent & consistent, pro-rate otherwise
     variable_monthly = 0
     for data in variable_merchants.values():
         if data['months_active'] >= 6 and data['is_consistent']:
-            variable_monthly += data['avg_when_active']
+            monthly_value = data['avg_when_active']
+            data['calc_type'] = 'avg'
+            data['calc_reasoning'] = f"Frequent ({data['months_active']} months) and consistent (CV={data['cv']:.2f})"
+            data['calc_formula'] = f"avg_when_active = {data['total']:.2f} / {data['months_active']} months = {monthly_value:.2f}"
         else:
-            variable_monthly += data['total'] / 12
+            monthly_value = data['total'] / 12
+            data['calc_type'] = '/12'
+            if data['months_active'] < 6:
+                data['calc_reasoning'] = f"Infrequent ({data['months_active']} months < 6): spread over 12"
+            else:
+                data['calc_reasoning'] = f"Inconsistent (CV={data['cv']:.2f} >= 0.3): spread over 12"
+            data['calc_formula'] = f"total / 12 = {data['total']:.2f} / 12 = {monthly_value:.2f}"
+        data['monthly_value'] = monthly_value
+        variable_monthly += monthly_value
 
     return {
         'by_category': dict(by_category),
@@ -744,6 +872,216 @@ def analyze_transactions(transactions):
         'variable_monthly': variable_monthly,
         'true_monthly': monthly_avg + annual_monthly + periodic_monthly + variable_monthly,
     }
+
+
+# ============================================================================
+# EXPORT FUNCTIONS
+# ============================================================================
+
+def build_merchant_json(merchant_name, data, verbose=0):
+    """Build JSON representation of a merchant with reasoning based on verbosity level.
+
+    Args:
+        merchant_name: Name of the merchant
+        data: Merchant data dictionary
+        verbose: Verbosity level (0=basic, 1=trace, 2=full)
+
+    Returns: dict suitable for JSON serialization
+    """
+    result = {
+        'name': merchant_name,
+        'classification': data.get('classification', 'unknown'),
+        'category': data.get('category', ''),
+        'subcategory': data.get('subcategory', ''),
+        'total': round(data.get('total', 0), 2),
+        'count': data.get('count', 0),
+        'months_active': data.get('months_active', 0),
+        'monthly_value': round(data.get('monthly_value', 0), 2),
+    }
+
+    # Add reasoning (always include decision)
+    reasoning = data.get('reasoning', {})
+    result['reasoning'] = {
+        'decision': reasoning.get('decision', ''),
+    }
+
+    # Add calculation info
+    result['calculation'] = {
+        'type': data.get('calc_type', ''),
+        'reason': data.get('calc_reasoning', ''),
+    }
+
+    # Verbose: add decision trace
+    if verbose >= 1:
+        result['reasoning']['trace'] = reasoning.get('trace', [])
+
+    # Very verbose: add thresholds, CV, and calculation formula
+    if verbose >= 2:
+        result['reasoning']['thresholds'] = reasoning.get('thresholds', {})
+        result['reasoning']['cv'] = reasoning.get('cv', 0)
+        result['reasoning']['is_consistent'] = reasoning.get('is_consistent', True)
+        result['calculation']['formula'] = data.get('calc_formula', '')
+        result['months'] = data.get('months', [])
+
+    # Add pattern match info if available
+    match_info = data.get('match_info')
+    if match_info:
+        result['pattern'] = {
+            'matched': match_info.get('pattern', ''),
+            'source': match_info.get('source', 'unknown'),
+        }
+
+    return result
+
+
+def export_json(stats, verbose=0, only=None, category_filter=None, merchant_filter=None):
+    """Export analysis results as JSON with reasoning.
+
+    Args:
+        stats: Analysis results from analyze_transactions()
+        verbose: Verbosity level (0=basic, 1=trace, 2=full)
+        only: List of classifications to include (e.g., ['monthly', 'variable'])
+        category_filter: Only include merchants in this category
+        merchant_filter: Only include these merchants (list of names)
+
+    Returns: JSON string
+    """
+    import json
+
+    output = {
+        'summary': {
+            'total_spending': round(stats['total'], 2),
+            'monthly_budget': round(stats['true_monthly'], 2),
+            'num_months': stats['num_months'],
+            'breakdown': {
+                'monthly_recurring': round(stats['monthly_avg'], 2),
+                'annual_monthly': round(stats['annual_monthly'], 2),
+                'periodic_monthly': round(stats['periodic_monthly'], 2),
+                'variable_monthly': round(stats['variable_monthly'], 2),
+            },
+            'totals': {
+                'monthly': round(stats['monthly_total'], 2),
+                'annual': round(stats['annual_total'], 2),
+                'periodic': round(stats['periodic_total'], 2),
+                'travel': round(stats['travel_total'], 2),
+                'one_off': round(stats['one_off_total'], 2),
+                'variable': round(stats['variable_total'], 2),
+            }
+        },
+        'classifications': {}
+    }
+
+    # Classification sections to process
+    all_sections = ['monthly', 'annual', 'periodic', 'travel', 'one_off', 'variable']
+    sections = only if only else all_sections
+
+    for section in sections:
+        if section not in all_sections:
+            continue
+        merchants_dict = stats.get(f'{section}_merchants', {})
+        merchants = []
+
+        for name, data in merchants_dict.items():
+            # Apply filters
+            if category_filter and data.get('category') != category_filter:
+                continue
+            if merchant_filter and name not in merchant_filter:
+                continue
+
+            merchants.append(build_merchant_json(name, data, verbose))
+
+        # Sort by monthly value descending
+        merchants.sort(key=lambda x: x['monthly_value'], reverse=True)
+        output['classifications'][section] = merchants
+
+    return json.dumps(output, indent=2)
+
+
+def export_markdown(stats, verbose=0, only=None, category_filter=None, merchant_filter=None):
+    """Export analysis results as Markdown with reasoning.
+
+    Args:
+        stats: Analysis results from analyze_transactions()
+        verbose: Verbosity level (0=basic, 1=trace, 2=full)
+        only: List of classifications to include (e.g., ['monthly', 'variable'])
+        category_filter: Only include merchants in this category
+        merchant_filter: Only include these merchants (list of names)
+
+    Returns: Markdown string
+    """
+    lines = ['# Spending Analysis\n']
+
+    # Summary
+    lines.append('## Summary\n')
+    lines.append(f"- **Monthly Budget:** ${stats['true_monthly']:.2f}/mo")
+    lines.append(f"- **Total Spending (YTD):** ${stats['total']:.2f}")
+    lines.append(f"- **Data Period:** {stats['num_months']} months\n")
+
+    # Classification sections to process
+    all_sections = ['monthly', 'annual', 'periodic', 'travel', 'one_off', 'variable']
+    section_names = {
+        'monthly': 'Monthly Recurring',
+        'annual': 'Annual Bills',
+        'periodic': 'Periodic Recurring',
+        'travel': 'Travel',
+        'one_off': 'One-Off',
+        'variable': 'Variable/Discretionary',
+    }
+    sections = only if only else all_sections
+
+    for section in sections:
+        if section not in all_sections:
+            continue
+        merchants_dict = stats.get(f'{section}_merchants', {})
+        if not merchants_dict:
+            continue
+
+        lines.append(f"\n## {section_names.get(section, section)}\n")
+
+        # Sort by monthly value
+        sorted_merchants = sorted(
+            merchants_dict.items(),
+            key=lambda x: x[1].get('monthly_value', 0),
+            reverse=True
+        )
+
+        for name, data in sorted_merchants:
+            # Apply filters
+            if category_filter and data.get('category') != category_filter:
+                continue
+            if merchant_filter and name not in merchant_filter:
+                continue
+
+            reasoning = data.get('reasoning', {})
+
+            lines.append(f"### {name}")
+            lines.append(f"**Classification:** {section.replace('_', ' ').title()}")
+            lines.append(f"**Reason:** {reasoning.get('decision', 'N/A')}")
+            lines.append(f"**Category:** {data.get('category', '')} > {data.get('subcategory', '')}")
+            lines.append(f"**Monthly Value:** ${data.get('monthly_value', 0):.2f}")
+            lines.append(f"**YTD Total:** ${data.get('total', 0):.2f}")
+            lines.append(f"**Months Active:** {data.get('months_active', 0)}/{stats['num_months']}")
+
+            # Verbose: add decision trace
+            if verbose >= 1:
+                trace = reasoning.get('trace', [])
+                if trace:
+                    lines.append('\n**Decision Trace:**')
+                    for i, step in enumerate(trace, 1):
+                        lines.append(f"  {i}. {step}")
+
+            # Very verbose: add calculation details
+            if verbose >= 2:
+                lines.append(f"\n**Calculation:** {data.get('calc_type', '')} ({data.get('calc_reasoning', '')})")
+                lines.append(f"  Formula: {data.get('calc_formula', '')}")
+                lines.append(f"  CV: {reasoning.get('cv', 0):.2f}")
+                thresholds = reasoning.get('thresholds', {})
+                if thresholds:
+                    lines.append(f"  Thresholds: bill={thresholds.get('bill_threshold')}, general={thresholds.get('general_threshold')}")
+
+            lines.append('')  # Empty line between merchants
+
+    return '\n'.join(lines)
 
 
 def print_summary(stats, year=2025, filter_category=None, currency_format="${amount}"):
@@ -1053,6 +1391,10 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             return f'<span class="txn-location intl clickable" onclick="{onclick}">{loc}</span>'
         else:
             return f'<span class="txn-location clickable" onclick="{onclick}">{loc}</span>'
+
+    # Generate embedded JSON for LLM tools (full verbosity for programmatic access)
+    import json
+    embedded_json = export_json(stats, verbose=2)
 
     html = f'''<!DOCTYPE html>
 <html lang="en">
@@ -3382,6 +3724,11 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
 
         // Initial load from hash
         hashToFilters();
+    </script>
+
+    <!-- Embedded JSON data for LLM analysis tools -->
+    <script id="report-data" type="application/json">
+{embedded_json}
     </script>
 </body>
 </html>'''

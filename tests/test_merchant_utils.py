@@ -159,7 +159,7 @@ class TestNormalizeMerchant:
             ('COSTCO', 'Costco', 'Food', 'Grocery', ParsedPattern(regex_pattern='COSTCO')),
         ]
         result = normalize_merchant('COSTCO WHOLESALE #1234', rules)
-        assert result == ('Costco', 'Food', 'Grocery')
+        assert result[:3] == ('Costco', 'Food', 'Grocery')
 
     def test_case_insensitive_match(self):
         """Matching should be case-insensitive."""
@@ -167,7 +167,7 @@ class TestNormalizeMerchant:
             ('COSTCO', 'Costco', 'Food', 'Grocery', ParsedPattern(regex_pattern='COSTCO')),
         ]
         result = normalize_merchant('costco wholesale', rules)
-        assert result == ('Costco', 'Food', 'Grocery')
+        assert result[:3] == ('Costco', 'Food', 'Grocery')
 
     def test_first_match_wins(self):
         """First matching rule wins."""
@@ -176,7 +176,7 @@ class TestNormalizeMerchant:
             ('COSTCO', 'Costco', 'Food', 'Grocery', ParsedPattern(regex_pattern='COSTCO')),
         ]
         result = normalize_merchant('COSTCO GAS STATION', rules)
-        assert result == ('Costco Gas', 'Transport', 'Gas')
+        assert result[:3] == ('Costco Gas', 'Transport', 'Gas')
 
     def test_no_match_returns_unknown(self):
         """No match returns Unknown category."""
@@ -198,11 +198,11 @@ class TestNormalizeMerchant:
 
         # Should match Uber (not Uber Eats)
         result = normalize_merchant('UBER RIDE 12345', rules)
-        assert result == ('Uber', 'Transport', 'Rideshare')
+        assert result[:3] == ('Uber', 'Transport', 'Rideshare')
 
         # Should match Uber Eats
         result = normalize_merchant('UBER EATS ORDER', rules)
-        assert result == ('Uber Eats', 'Food', 'Delivery')
+        assert result[:3] == ('Uber Eats', 'Food', 'Delivery')
 
     def test_amount_modifier_match(self):
         """Amount modifier affects matching."""
@@ -217,11 +217,11 @@ class TestNormalizeMerchant:
 
         # Large purchase -> Bulk
         result = normalize_merchant('COSTCO WHOLESALE', rules, amount=250)
-        assert result == ('Costco Bulk', 'Shopping', 'Bulk')
+        assert result[:3] == ('Costco Bulk', 'Shopping', 'Bulk')
 
         # Small purchase -> Grocery (skips first rule)
         result = normalize_merchant('COSTCO WHOLESALE', rules, amount=50)
-        assert result == ('Costco', 'Food', 'Grocery')
+        assert result[:3] == ('Costco', 'Food', 'Grocery')
 
     def test_date_modifier_match(self):
         """Date modifier affects matching."""
@@ -236,11 +236,11 @@ class TestNormalizeMerchant:
 
         # Matching date -> TV Purchase
         result = normalize_merchant('BESTBUY STORE', rules, txn_date=date(2025, 1, 15))
-        assert result == ('TV Purchase', 'Shopping', 'Electronics')
+        assert result[:3] == ('TV Purchase', 'Shopping', 'Electronics')
 
         # Different date -> Best Buy (skips first rule)
         result = normalize_merchant('BESTBUY STORE', rules, txn_date=date(2025, 1, 16))
-        assert result == ('Best Buy', 'Shopping', 'Retail')
+        assert result[:3] == ('Best Buy', 'Shopping', 'Retail')
 
     def test_combined_modifiers(self):
         """Combined amount and date modifiers."""
@@ -255,15 +255,15 @@ class TestNormalizeMerchant:
 
         # Both match -> specific purchase
         result = normalize_merchant('BESTBUY', rules, amount=499.99, txn_date=date(2025, 1, 15))
-        assert result == ('That Specific Purchase', 'Personal', 'Gifts')
+        assert result[:3] == ('That Specific Purchase', 'Personal', 'Gifts')
 
         # Wrong amount -> generic
         result = normalize_merchant('BESTBUY', rules, amount=100, txn_date=date(2025, 1, 15))
-        assert result == ('Best Buy', 'Shopping', 'Electronics')
+        assert result[:3] == ('Best Buy', 'Shopping', 'Electronics')
 
         # Wrong date -> generic
         result = normalize_merchant('BESTBUY', rules, amount=499.99, txn_date=date(2025, 1, 16))
-        assert result == ('Best Buy', 'Shopping', 'Electronics')
+        assert result[:3] == ('Best Buy', 'Shopping', 'Electronics')
 
     def test_backward_compatible_4tuple(self):
         """Should work with old 4-tuple format."""
@@ -271,7 +271,7 @@ class TestNormalizeMerchant:
             ('COSTCO', 'Costco', 'Food', 'Grocery'),  # 4-tuple, no parsed pattern
         ]
         result = normalize_merchant('COSTCO WHOLESALE', rules)
-        assert result == ('Costco', 'Food', 'Grocery')
+        assert result[:3] == ('Costco', 'Food', 'Grocery')
 
     def test_amount_range_modifier(self):
         """Amount range modifier."""
@@ -286,11 +286,11 @@ class TestNormalizeMerchant:
 
         # In range -> Fine Dining
         result = normalize_merchant('RESTAURANT XYZ', rules, amount=200)
-        assert result == ('Fine Dining', 'Food', 'Restaurant')
+        assert result[:3] == ('Fine Dining', 'Food', 'Restaurant')
 
         # Below range -> Casual
         result = normalize_merchant('RESTAURANT XYZ', rules, amount=50)
-        assert result == ('Casual Dining', 'Food', 'Restaurant')
+        assert result[:3] == ('Casual Dining', 'Food', 'Restaurant')
 
     def test_month_modifier(self):
         """Month modifier for seasonal categorization."""
@@ -305,11 +305,11 @@ class TestNormalizeMerchant:
 
         # December -> Holiday Shopping
         result = normalize_merchant('AMAZON.COM', rules, txn_date=date(2025, 12, 15))
-        assert result == ('Holiday Shopping', 'Shopping', 'Gifts')
+        assert result[:3] == ('Holiday Shopping', 'Shopping', 'Gifts')
 
         # Other month -> regular Amazon
         result = normalize_merchant('AMAZON.COM', rules, txn_date=date(2025, 6, 15))
-        assert result == ('Amazon', 'Shopping', 'Online')
+        assert result[:3] == ('Amazon', 'Shopping', 'Online')
 
 
 class TestCleanDescription:
@@ -349,8 +349,8 @@ class TestGetAllRules:
         """Should return baseline rules when no user file."""
         rules = get_all_rules(None)
         assert len(rules) > 0  # Has baseline rules
-        # All rules should be 5-tuples
-        assert all(len(r) == 5 for r in rules)
+        # All rules should be 6-tuples (with source)
+        assert all(len(r) == 6 for r in rules)
 
     def test_user_rules_come_first(self):
         """User rules should come before baseline rules."""
@@ -382,7 +382,8 @@ NETFLIX,My Netflix,Entertainment,Movies
             rules = get_all_rules(f.name)
 
             # When we match NETFLIX, user rule should win
-            result = normalize_merchant('NETFLIX.COM', rules)
-            assert result == ('My Netflix', 'Entertainment', 'Movies')
+            merchant, category, subcategory, match_info = normalize_merchant('NETFLIX.COM', rules)
+            assert (merchant, category, subcategory) == ('My Netflix', 'Entertainment', 'Movies')
+            assert match_info['source'] == 'user'
 
             os.unlink(f.name)

@@ -186,6 +186,23 @@ tally init ./my-budget
 tally run
 tally run ./path/to/config
 
+# Output formats for programmatic analysis
+tally run --format json           # JSON output with classification reasoning
+tally run --format markdown       # Markdown report
+tally run --format json -v        # JSON with decision trace
+tally run --format json -vv       # JSON with full details (thresholds, CV)
+
+# Filter output
+tally run --format json --only monthly,variable    # Just these classifications
+tally run --format json --category Food            # Just Food category merchants
+
+# Explain why merchants are classified the way they are
+tally explain                     # Overview of all classifications
+tally explain Netflix             # Explain specific merchant
+tally explain Netflix -v          # With decision trace
+tally explain -c monthly          # Explain all monthly merchants
+tally explain --category Food     # Explain all Food category merchants
+
 # View summary only (find uncategorized transactions)
 tally run --summary
 
@@ -201,6 +218,51 @@ tally discover --limit 50         # Show top 50 by spend
 # Diagnose configuration issues
 tally diag                        # Show config, data sources, format parsing
 ```
+
+## Understanding Classifications
+
+Tally classifies merchants into these categories based on occurrence patterns:
+
+| Classification | Criteria | Example |
+|----------------|----------|---------|
+| Monthly | Bills/Utilities/Subscriptions appearing 50%+ of months | Netflix, Electric Bill |
+| Annual | Bill-type categories with 1-2 charges per year | Annual insurance premium |
+| Periodic | Recurring but non-monthly (tuition, quarterly payments) | School tuition |
+| Travel | Travel category or international location | Airlines, Hotels abroad |
+| One-Off | High-value infrequent (>$1000, ≤3 months) | Home improvement, Electronics |
+| Variable | Everything else (discretionary) | Restaurants, Shopping |
+
+Use `tally explain` to understand why a specific merchant is classified:
+
+```bash
+tally explain Netflix -v          # See the decision trace
+tally explain Netflix -vv         # Full details + which rule matched
+tally explain --classification variable  # Why is something variable?
+```
+
+### Example: tally explain -vv Output
+
+```
+Netflix → Monthly
+  Monthly: Subscriptions appears 6/6 months (50% threshold = 3)
+
+  Decision trace:
+    ✗ NOT excluded: Subscriptions not in [Transfers, Cash, Income]
+    ✗ NOT travel: category=Subscriptions, is_travel=false
+    ✗ NOT annual: (Subscriptions, Streaming) not in annual categories
+    ✗ NOT periodic: no periodic patterns matched
+    ✓ IS monthly: Subscriptions with 6/6 months (>= 3 bill threshold)
+
+  Calculation: avg (CV=0.00 (<0.3), payments are consistent)
+    Formula: avg_when_active = 95.94 / 6 months = 15.99
+    CV: 0.00
+
+  Rule: NETFLIX.* (user)
+```
+
+The `Rule:` line shows:
+- The pattern that matched (e.g., `NETFLIX.*`)
+- The source: `user` (from merchant_categories.csv) or `baseline` (built-in rules)
 
 ## Troubleshooting
 
@@ -218,6 +280,9 @@ When working with this budget analyzer, you may be asked to:
 3. **Configure data sources** - Edit `config/settings.yaml`
 4. **Analyze and fix uncategorized transactions** - Run with `--summary`, then add rules
 5. **Debug configuration issues** - Use `tally diag`
+6. **Analyze spending patterns** - Use `tally run --format json` for structured data
+7. **Explain classifications** - Use `tally explain <merchant>` to understand why
+8. **Answer "why" questions** - Use `tally explain -v` for decision traces
 
 ## Understanding merchant_categories.csv
 
@@ -1182,12 +1247,33 @@ def cmd_run(args):
     # Analyze
     stats = analyze_transactions(all_txns)
 
-    # Print summary
-    currency_format = config.get('currency_format', '${amount}')
-    print_summary(stats, year=year, currency_format=currency_format)
+    # Parse filter options
+    only_filter = args.only.split(',') if args.only else None
+    category_filter = args.category if hasattr(args, 'category') and args.category else None
 
-    # Generate HTML unless --summary flag
-    if not args.summary:
+    # Handle output format
+    output_format = args.format if hasattr(args, 'format') else 'html'
+    verbose = args.verbose if hasattr(args, 'verbose') else 0
+
+    currency_format = config.get('currency_format', '${amount}')
+
+    if output_format == 'json':
+        # JSON output with reasoning
+        from .analyzer import export_json
+        print(export_json(stats, verbose=verbose, only=only_filter, category_filter=category_filter))
+    elif output_format == 'markdown':
+        # Markdown output with reasoning
+        from .analyzer import export_markdown
+        print(export_markdown(stats, verbose=verbose, only=only_filter, category_filter=category_filter))
+    elif output_format == 'summary' or args.summary:
+        # Text summary only (no HTML)
+        print_summary(stats, year=year, currency_format=currency_format)
+    else:
+        # HTML output (default)
+        # Print summary first
+        if not args.quiet:
+            print_summary(stats, year=year, currency_format=currency_format)
+
         # Determine output path
         if args.output:
             output_path = args.output
@@ -1197,7 +1283,8 @@ def cmd_run(args):
             output_path = os.path.join(output_dir, config.get('html_filename', 'spending_summary.html'))
 
         write_summary_file(stats, output_path, year=year, home_locations=home_locations, currency_format=currency_format)
-        print(f"\nHTML report: {output_path}")
+        if not args.quiet:
+            print(f"\nHTML report: {output_path}")
 
 
 def cmd_discover(args):
@@ -1791,6 +1878,310 @@ def update_assets(skip_confirm: bool = False):
         print(f"✓ Updated {filename}")
 
 
+def cmd_explain(args):
+    """Handle the 'explain' subcommand - explain merchant classifications."""
+    from difflib import get_close_matches
+    from .analyzer import export_json, export_markdown, build_merchant_json
+
+    # Determine config directory
+    # Check if first merchant arg looks like a config path
+    config_dir = None
+    merchant_names = args.merchant if args.merchant else []
+
+    if merchant_names and os.path.isdir(merchant_names[-1]):
+        # Last arg is a directory, treat it as config
+        config_dir = os.path.abspath(merchant_names[-1])
+        merchant_names = merchant_names[:-1]
+    elif args.config:
+        config_dir = os.path.abspath(args.config)
+    else:
+        config_dir = os.path.abspath('config')
+
+    if not os.path.isdir(config_dir):
+        print(f"Error: Config directory not found: {config_dir}", file=sys.stderr)
+        print(f"\nRun 'tally init' to create a new budget directory.", file=sys.stderr)
+        sys.exit(1)
+
+    # Load configuration
+    try:
+        config = load_config(config_dir, args.settings)
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    home_locations = config.get('home_locations', set())
+    data_sources = config.get('data_sources', [])
+
+    if not data_sources:
+        print("Error: No data sources configured", file=sys.stderr)
+        sys.exit(1)
+
+    # Load merchant rules
+    rules_file = os.path.join(config_dir, 'merchant_categories.csv')
+    if os.path.exists(rules_file):
+        rules = get_all_rules(rules_file)
+    else:
+        rules = get_all_rules()
+
+    # Parse transactions (quietly)
+    all_txns = []
+    for source in data_sources:
+        filepath = os.path.join(config_dir, '..', source['file'])
+        filepath = os.path.normpath(filepath)
+        if not os.path.exists(filepath):
+            filepath = os.path.join(os.path.dirname(config_dir), source['file'])
+        if not os.path.exists(filepath):
+            continue
+
+        parser_type = source.get('_parser_type', source.get('type', '')).lower()
+        format_spec = source.get('_format_spec')
+
+        try:
+            if parser_type == 'amex':
+                txns = parse_amex(filepath, rules, home_locations)
+            elif parser_type == 'boa':
+                txns = parse_boa(filepath, rules, home_locations)
+            elif parser_type == 'generic' and format_spec:
+                txns = parse_generic_csv(filepath, format_spec, rules,
+                                         home_locations,
+                                         source_name=source.get('name', 'CSV'),
+                                         decimal_separator=source.get('decimal_separator', '.'))
+            else:
+                continue
+        except Exception:
+            continue
+
+        all_txns.extend(txns)
+
+    if not all_txns:
+        print("Error: No transactions found", file=sys.stderr)
+        sys.exit(1)
+
+    # Analyze
+    stats = analyze_transactions(all_txns)
+
+    # Get all merchants from all classifications
+    all_merchants = {}
+    for section in ['monthly', 'annual', 'periodic', 'travel', 'one_off', 'variable']:
+        merchants_dict = stats.get(f'{section}_merchants', {})
+        for name, data in merchants_dict.items():
+            all_merchants[name] = data
+
+    verbose = args.verbose
+
+    # Handle output based on what was requested
+    if merchant_names:
+        # Explain specific merchants
+        found_any = False
+        for merchant_query in merchant_names:
+            # Try exact match first
+            if merchant_query in all_merchants:
+                found_any = True
+                _print_merchant_explanation(merchant_query, all_merchants[merchant_query], args.format, verbose, stats['num_months'])
+            else:
+                # Try case-insensitive match
+                matches = [m for m in all_merchants.keys() if m.lower() == merchant_query.lower()]
+                if matches:
+                    found_any = True
+                    _print_merchant_explanation(matches[0], all_merchants[matches[0]], args.format, verbose, stats['num_months'])
+                else:
+                    # Try fuzzy match
+                    close_matches = get_close_matches(merchant_query, list(all_merchants.keys()), n=3, cutoff=0.6)
+                    if close_matches:
+                        print(f"No merchant matching '{merchant_query}'. Did you mean:", file=sys.stderr)
+                        for m in close_matches:
+                            print(f"  - {m}", file=sys.stderr)
+                    else:
+                        print(f"No merchant matching '{merchant_query}'", file=sys.stderr)
+
+        if not found_any:
+            sys.exit(1)
+
+    elif args.classification:
+        # Show all merchants in a specific classification
+        section = args.classification
+        merchants_dict = stats.get(f'{section}_merchants', {})
+        if not merchants_dict:
+            print(f"No merchants in classification '{section}'")
+            sys.exit(0)
+
+        if args.format == 'json':
+            import json
+            merchants = [build_merchant_json(name, data, verbose) for name, data in merchants_dict.items()]
+            merchants.sort(key=lambda x: x['monthly_value'], reverse=True)
+            print(json.dumps({'classification': section, 'merchants': merchants}, indent=2))
+        elif args.format == 'markdown':
+            print(export_markdown(stats, verbose=verbose, only=[section], category_filter=args.category))
+        else:
+            # Text format
+            _print_classification_summary(section, merchants_dict, verbose, stats['num_months'])
+
+    elif args.category:
+        # Filter by category across all classifications
+        if args.format == 'json':
+            print(export_json(stats, verbose=verbose, category_filter=args.category))
+        elif args.format == 'markdown':
+            print(export_markdown(stats, verbose=verbose, category_filter=args.category))
+        else:
+            # Text format - show all merchants in category
+            print(f"Merchants in category: {args.category}\n")
+            for section in ['monthly', 'annual', 'periodic', 'travel', 'one_off', 'variable']:
+                merchants_dict = stats.get(f'{section}_merchants', {})
+                section_merchants = {k: v for k, v in merchants_dict.items() if v.get('category') == args.category}
+                if section_merchants:
+                    _print_classification_summary(section, section_merchants, verbose, stats['num_months'])
+
+    else:
+        # No specific merchant - show classification summary
+        _print_explain_summary(stats, verbose)
+
+
+def _print_merchant_explanation(name, data, output_format, verbose, num_months):
+    """Print explanation for a single merchant."""
+    import json
+    from .analyzer import build_merchant_json
+
+    if output_format == 'json':
+        print(json.dumps(build_merchant_json(name, data, verbose), indent=2))
+    elif output_format == 'markdown':
+        reasoning = data.get('reasoning', {})
+        print(f"## {name}")
+        print(f"**Classification:** {data.get('classification', 'unknown').replace('_', ' ').title()}")
+        print(f"**Reason:** {reasoning.get('decision', 'N/A')}")
+        print(f"**Category:** {data.get('category', '')} > {data.get('subcategory', '')}")
+        print(f"**Monthly Value:** ${data.get('monthly_value', 0):.2f}")
+        print(f"**YTD Total:** ${data.get('total', 0):.2f}")
+        print(f"**Months Active:** {data.get('months_active', 0)}/{num_months}")
+
+        if verbose >= 1:
+            trace = reasoning.get('trace', [])
+            if trace:
+                print('\n**Decision Trace:**')
+                for i, step in enumerate(trace, 1):
+                    print(f"  {i}. {step}")
+
+        if verbose >= 2:
+            print(f"\n**Calculation:** {data.get('calc_type', '')} ({data.get('calc_reasoning', '')})")
+            print(f"  Formula: {data.get('calc_formula', '')}")
+
+        # Show pattern match info
+        match_info = data.get('match_info')
+        if match_info:
+            pattern = match_info.get('pattern', '')
+            source = match_info.get('source', 'unknown')
+            print(f"\n**Pattern:** `{pattern}` ({source})")
+        print()
+    else:
+        # Text format
+        classification = data.get('classification', 'unknown').replace('_', ' ').title()
+        reasoning = data.get('reasoning', {})
+        print(f"{name} → {classification}")
+        print(f"  {reasoning.get('decision', 'N/A')}")
+
+        if verbose >= 1:
+            trace = reasoning.get('trace', [])
+            if trace:
+                print()
+                print("  Decision trace:")
+                for step in trace:
+                    print(f"    {step}")
+
+        if verbose >= 2:
+            print()
+            print(f"  Calculation: {data.get('calc_type', '')} ({data.get('calc_reasoning', '')})")
+            print(f"    Formula: {data.get('calc_formula', '')}")
+            print(f"    CV: {reasoning.get('cv', 0):.2f}")
+
+        # Show pattern match info (always show if available)
+        match_info = data.get('match_info')
+        if match_info:
+            pattern = match_info.get('pattern', '')
+            source = match_info.get('source', 'unknown')
+            print(f"\n  Rule: {pattern} ({source})")
+        print()
+
+
+def _print_classification_summary(section, merchants_dict, verbose, num_months):
+    """Print summary of merchants in a classification."""
+    section_name = section.replace('_', ' ').title()
+    print(f"{section_name} ({len(merchants_dict)} merchants)")
+    print("-" * 50)
+
+    sorted_merchants = sorted(merchants_dict.items(), key=lambda x: x[1].get('monthly_value', 0), reverse=True)
+    for name, data in sorted_merchants:
+        reasoning = data.get('reasoning', {})
+        category = data.get('category', '')
+        months = data.get('months_active', 0)
+
+        # Short reason
+        decision = reasoning.get('decision', '')
+        short_reason = f"{category} ({months}/{num_months} months)"
+
+        print(f"  {name:<24} {short_reason}")
+
+        if verbose >= 1:
+            trace = reasoning.get('trace', [])
+            if trace:
+                for step in trace:
+                    print(f"    {step}")
+            print()
+
+    print()
+
+
+def _print_explain_summary(stats, verbose):
+    """Print overview summary of all classifications with brief reasons."""
+    section_names = {
+        'monthly': 'Monthly Recurring',
+        'annual': 'Annual Bills',
+        'periodic': 'Periodic Recurring',
+        'travel': 'Travel',
+        'one_off': 'One-Off',
+        'variable': 'Variable/Discretionary',
+    }
+
+    print("Classification Summary")
+    print("=" * 60)
+    print()
+
+    num_months = stats['num_months']
+
+    for section in ['monthly', 'annual', 'periodic', 'travel', 'one_off', 'variable']:
+        merchants_dict = stats.get(f'{section}_merchants', {})
+        if not merchants_dict:
+            continue
+
+        section_name = section_names.get(section, section)
+        print(f"{section_name} ({len(merchants_dict)} merchants)")
+
+        sorted_merchants = sorted(merchants_dict.items(), key=lambda x: x[1].get('monthly_value', 0), reverse=True)
+
+        # Show top 5 or all if verbose
+        display_count = len(sorted_merchants) if verbose >= 1 else min(5, len(sorted_merchants))
+
+        for name, data in sorted_merchants[:display_count]:
+            category = data.get('category', '')
+            months = data.get('months_active', 0)
+            cv = data.get('cv', 0)
+
+            # Short classification hint
+            if data.get('is_consistent', True):
+                consistency = "consistent"
+            else:
+                consistency = "varies"
+
+            print(f"  {name:<26} {category} ({months}/{num_months} months, {consistency})")
+
+        if len(sorted_merchants) > display_count:
+            remaining = len(sorted_merchants) - display_count
+            print(f"  ... and {remaining} more")
+
+        print()
+
+    print("Run `tally explain <merchant>` for detailed reasoning.")
+    print("Run `tally explain -v` for full details on all merchants.")
+
+
 def main():
     """Main entry point for tally CLI."""
     parser = argparse.ArgumentParser(
@@ -1859,6 +2250,26 @@ Examples:
         '--quiet', '-q',
         action='store_true',
         help='Minimal output'
+    )
+    run_parser.add_argument(
+        '--format', '-f',
+        choices=['html', 'json', 'markdown', 'summary'],
+        default='html',
+        help='Output format: html (default), json (with reasoning), markdown, summary (text)'
+    )
+    run_parser.add_argument(
+        '-v', '--verbose',
+        action='count',
+        default=0,
+        help='Increase output verbosity (use -v for trace, -vv for full details)'
+    )
+    run_parser.add_argument(
+        '--only',
+        help='Filter to specific classifications (comma-separated: monthly,variable,travel)'
+    )
+    run_parser.add_argument(
+        '--category',
+        help='Filter to specific category'
     )
 
     # inspect subcommand
@@ -1932,6 +2343,50 @@ Examples:
         help='Output format: text (human readable), json (for agents)'
     )
 
+    # explain subcommand
+    explain_parser = subparsers.add_parser(
+        'explain',
+        help='Explain why merchants are classified the way they are',
+        description='Show classification reasoning for merchants. '
+                    'Runs analysis on-the-fly and explains the decision process.'
+    )
+    explain_parser.add_argument(
+        'merchant',
+        nargs='*',
+        help='Merchant name(s) to explain (optional, shows summary if omitted)'
+    )
+    explain_parser.add_argument(
+        'config',
+        nargs='?',
+        help='Path to config directory (default: ./config)'
+    )
+    explain_parser.add_argument(
+        '--settings', '-s',
+        default='settings.yaml',
+        help='Settings file name (default: settings.yaml)'
+    )
+    explain_parser.add_argument(
+        '--format', '-f',
+        choices=['text', 'json', 'markdown'],
+        default='text',
+        help='Output format: text (default), json, markdown'
+    )
+    explain_parser.add_argument(
+        '-v', '--verbose',
+        action='count',
+        default=0,
+        help='Increase output verbosity (use -v for trace, -vv for full details)'
+    )
+    explain_parser.add_argument(
+        '--classification', '-c',
+        choices=['monthly', 'annual', 'periodic', 'travel', 'one_off', 'variable'],
+        help='Show all merchants in a specific classification'
+    )
+    explain_parser.add_argument(
+        '--category',
+        help='Filter to specific category'
+    )
+
     # version subcommand
     subparsers.add_parser(
         'version',
@@ -1988,6 +2443,8 @@ Examples:
         cmd_discover(args)
     elif args.command == 'diag':
         cmd_diag(args)
+    elif args.command == 'explain':
+        cmd_explain(args)
     elif args.command == 'version':
         sha_display = GIT_SHA[:8] if GIT_SHA != 'unknown' else 'unknown'
         print(f"tally {VERSION} ({sha_display})")

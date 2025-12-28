@@ -1028,22 +1028,32 @@ def get_all_rules(csv_path=None):
         csv_path: Optional path to user's merchant_categories.csv
 
     Returns:
-        List of (pattern, merchant, category, subcategory, parsed_pattern) tuples.
+        List of (pattern, merchant, category, subcategory, parsed_pattern, source) tuples.
         User rules come first so they take priority over baseline.
+        Source is 'user' or 'baseline'.
     """
-    user_rules = []
+    user_rules_with_source = []
     if csv_path:
         user_rules = load_merchant_rules(csv_path)
+        # Add source='user' to each rule
+        for rule in user_rules:
+            if len(rule) == 5:
+                pattern, merchant, category, subcategory, parsed = rule
+                user_rules_with_source.append((pattern, merchant, category, subcategory, parsed, 'user'))
+            else:
+                pattern, merchant, category, subcategory = rule
+                parsed = ParsedPattern(regex_pattern=pattern)
+                user_rules_with_source.append((pattern, merchant, category, subcategory, parsed, 'user'))
 
-    # Convert baseline rules (4-tuples) to 5-tuples for consistency
-    baseline_rules_5tuple = []
+    # Convert baseline rules (4-tuples) to 6-tuples with source
+    baseline_rules_6tuple = []
     for rule in BASELINE_RULES:
         pattern, merchant, category, subcategory = rule
         parsed = ParsedPattern(regex_pattern=pattern)
-        baseline_rules_5tuple.append((pattern, merchant, category, subcategory, parsed))
+        baseline_rules_6tuple.append((pattern, merchant, category, subcategory, parsed, 'baseline'))
 
     # User rules first (checked first, can override baseline)
-    return user_rules + baseline_rules_5tuple
+    return user_rules_with_source + baseline_rules_6tuple
 
 
 def diagnose_rules(csv_path=None):
@@ -1292,22 +1302,24 @@ def normalize_merchant(
     rules: list,
     amount: Optional[float] = None,
     txn_date: Optional[date] = None
-) -> Tuple[str, str, str]:
-    """Normalize a merchant description to (name, category, subcategory).
+) -> Tuple[str, str, str, Optional[dict]]:
+    """Normalize a merchant description to (name, category, subcategory, match_info).
 
     Args:
         description: Raw transaction description
         rules: List of (pattern, merchant, category, subcategory, parsed_pattern) tuples
+              or (pattern, merchant, category, subcategory, parsed_pattern, source) tuples
         amount: Optional transaction amount for modifier matching
         txn_date: Optional transaction date for modifier matching
 
     Returns:
-        Tuple of (merchant_name, category, subcategory)
+        Tuple of (merchant_name, category, subcategory, match_info)
+        match_info is a dict with 'pattern', 'source' (user/baseline/special), or None if no match
     """
     # First, try special transformations
     special = apply_special_transformations(description)
     if special:
-        return special
+        return (*special, {'pattern': '(special transformation)', 'source': 'special'})
 
     # Clean the description for better matching
     cleaned = clean_description(description)
@@ -1316,12 +1328,16 @@ def normalize_merchant(
 
     # Try pattern matching against both original and cleaned
     for rule in rules:
-        # Handle both old format (4-tuple) and new format (5-tuple)
-        if len(rule) == 5:
+        # Handle various formats: 4-tuple, 5-tuple, 6-tuple (with source)
+        if len(rule) == 6:
+            pattern, merchant, category, subcategory, parsed, source = rule
+        elif len(rule) == 5:
             pattern, merchant, category, subcategory, parsed = rule
+            source = 'unknown'
         else:
             pattern, merchant, category, subcategory = rule
             parsed = None
+            source = 'unknown'
 
         try:
             # Check regex pattern first (most common case)
@@ -1337,11 +1353,11 @@ def normalize_merchant(
                 if not check_all_conditions(parsed, amount, txn_date):
                     continue
 
-            return (merchant, category, subcategory)
+            return (merchant, category, subcategory, {'pattern': pattern, 'source': source})
         except re.error:
             # Invalid regex pattern, skip
             continue
 
     # Fallback: extract merchant name from description, categorize as Unknown
     merchant_name = extract_merchant_name(description)
-    return (merchant_name, 'Unknown', 'Unknown')
+    return (merchant_name, 'Unknown', 'Unknown', None)
