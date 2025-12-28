@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: ''
+      draft:
+        description: 'Create as draft release for review'
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   prepare:
@@ -88,7 +93,7 @@ jobs:
         with:
           tag_name: v${{ needs.prepare.outputs.version }}
           name: Tally v${{ needs.prepare.outputs.version }}
-          draft: false
+          draft: ${{ inputs.draft }}
           prerelease: false
           files: |
             artifacts/tally-linux-amd64/tally-linux-amd64.zip
