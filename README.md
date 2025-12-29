@@ -8,14 +8,18 @@ Works with Claude Code, Codex, Copilot, Cursor, or a local model.
 
 ## Install
 
+**Linux/macOS:**
 ```bash
-# Linux/macOS
 curl -fsSL https://tallyai.money/install.sh | bash
+```
 
-# Windows PowerShell
+**Windows PowerShell:**
+```powershell
 irm https://tallyai.money/install.ps1 | iex
+```
 
-# With uv
+**With uv:**
+```bash
 uv tool install git+https://github.com/davidfowl/tally
 ```
 
@@ -159,16 +163,18 @@ Netflix → Monthly
 
 Get the latest build from main branch:
 
+**Update existing install:**
 ```bash
-# Install dev build
 tally update --prerelease
+```
 
-# Fresh install (dev)
+**Fresh install (Linux/macOS):**
+```bash
 curl -fsSL https://tallyai.money/install.sh | bash -s -- --prerelease
 ```
 
+**Fresh install (Windows):**
 ```powershell
-# Windows (dev)
 iex "& { $(irm https://tallyai.money/install.ps1) } -Prerelease"
 ```
 
