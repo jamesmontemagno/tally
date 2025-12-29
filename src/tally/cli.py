@@ -1013,6 +1013,30 @@ Run `tally --help-config` for detailed configuration guide.
     else:
         files_skipped.append('CLAUDE.md')
 
+    # Copy config.html (configuration editor) from bundled assets
+    import shutil
+    config_html_path = os.path.join(config_dir, 'config.html')
+    if not os.path.exists(config_html_path):
+        bundled_config_html = get_bundled_asset_path('config.html')
+        if bundled_config_html and os.path.exists(bundled_config_html):
+            shutil.copy2(bundled_config_html, config_html_path)
+            files_created.append('config/config.html')
+        else:
+            # Fallback: try to download from repo
+            try:
+                import urllib.request
+                config_html_url = f"{REPO_URL.replace('github.com', 'raw.githubusercontent.com')}/main/src/tally/assets/config.html"
+                with urllib.request.urlopen(config_html_url, timeout=10) as response:
+                    config_html_content = response.read()
+                with open(config_html_path, 'wb') as f:
+                    f.write(config_html_content)
+                files_created.append('config/config.html')
+            except Exception:
+                # Not critical - user can run tally config later to get it
+                pass
+    else:
+        files_skipped.append('config/config.html')
+
     return files_created, files_skipped
 
 
@@ -1798,6 +1822,97 @@ def cmd_diag(args):
         print(json_module.dumps(output, indent=2))
 
 
+def cmd_config(args):
+    """Launch the configuration editor in a browser."""
+    import http.server
+    import socketserver
+    import threading
+    import webbrowser
+    import shutil
+    
+    # Determine config directory
+    config_dir = args.config if args.config else './config'
+    config_dir = os.path.abspath(config_dir)
+    
+    if not os.path.isdir(config_dir):
+        print(f"Error: Config directory not found: {config_dir}")
+        print("  Run 'tally init' first to create a config directory")
+        sys.exit(1)
+    
+    # Check for config.html in the config directory
+    config_html_path = os.path.join(config_dir, 'config.html')
+    
+    if not os.path.exists(config_html_path):
+        # Copy config.html from bundled assets
+        print("Setting up configuration editor...")
+        try:
+            bundled_config_html = get_bundled_asset_path('config.html')
+            if bundled_config_html and os.path.exists(bundled_config_html):
+                shutil.copy2(bundled_config_html, config_html_path)
+                print(f"  Created: {config_html_path}")
+            else:
+                # Fallback: try to download from repo
+                import urllib.request
+                print("Downloading configuration editor...")
+                config_html_url = f"{REPO_URL.replace('github.com', 'raw.githubusercontent.com')}/main/src/tally/assets/config.html"
+                with urllib.request.urlopen(config_html_url, timeout=10) as response:
+                    config_html_content = response.read()
+                with open(config_html_path, 'wb') as f:
+                    f.write(config_html_content)
+                print(f"  Created: {config_html_path}")
+        except Exception as e:
+            print(f"Error setting up config.html: {e}")
+            print("  You can manually download it from:")
+            print(f"  {REPO_URL}/blob/main/config/config.html")
+            sys.exit(1)
+    
+    port = args.port
+    
+    # Create a simple HTTP server
+    class QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=config_dir, **kw)
+        
+        def log_message(self, format, *log_args):
+            # Suppress logging unless verbose
+            pass
+    
+    # Find an available port
+    while port < args.port + 100:
+        try:
+            with socketserver.TCPServer(("", port), QuietHandler) as httpd:
+                url = f"http://localhost:{port}/config.html"
+                
+                print(f"Starting configuration editor...")
+                print(f"  Config directory: {config_dir}")
+                print(f"  URL: {url}")
+                print()
+                print("Press Ctrl+C to stop the server")
+                print()
+                
+                # Open browser after a short delay
+                if not args.no_browser:
+                    def open_browser():
+                        import time
+                        time.sleep(0.5)
+                        webbrowser.open(url)
+                    
+                    browser_thread = threading.Thread(target=open_browser)
+                    browser_thread.daemon = True
+                    browser_thread.start()
+                
+                try:
+                    httpd.serve_forever()
+                except KeyboardInterrupt:
+                    print("\nServer stopped.")
+                    sys.exit(0)
+        except OSError:
+            port += 1
+    
+    print(f"Error: Could not find an available port in range {args.port}-{args.port + 99}")
+    sys.exit(1)
+
+
 def cmd_update(args):
     """Handle the update command."""
     print("Checking for updates...")
@@ -1859,19 +1974,59 @@ def cmd_update(args):
         sys.exit(1)
 
 
+def get_bundled_asset_path(filename: str) -> str:
+    """Get the path to a bundled asset file.
+    
+    Returns the path to an asset bundled with the package, or None if not found.
+    Works both when installed as a package and when running from source.
+    """
+    import importlib.resources
+    
+    try:
+        # Python 3.9+ way using importlib.resources
+        try:
+            from importlib.resources import files
+            asset_path = files('tally.assets').joinpath(filename)
+            # For Python 3.9+, we need to use as_file for actual path
+            if hasattr(asset_path, 'is_file') and asset_path.is_file():
+                return str(asset_path)
+        except (ImportError, TypeError):
+            pass
+        
+        # Fallback: look relative to this file
+        this_dir = os.path.dirname(os.path.abspath(__file__))
+        asset_path = os.path.join(this_dir, 'assets', filename)
+        if os.path.exists(asset_path):
+            return asset_path
+            
+    except Exception:
+        pass
+    
+    return None
+
+
 def update_assets(skip_confirm: bool = False):
-    """Update AGENTS.md and CLAUDE.md in current directory."""
+    """Update AGENTS.md, CLAUDE.md, and config.html in current directory."""
     from pathlib import Path
+    import shutil
 
     target_dir = Path.cwd()
-    assets = [
+    
+    # Text assets with inline content
+    text_assets = [
         ('AGENTS.md', STARTER_AGENTS_MD),
         ('CLAUDE.md', STARTER_CLAUDE_MD),
     ]
+    
+    # Binary/file assets from bundled package
+    file_assets = [
+        ('config/config.html', 'config.html'),  # (dest_path, asset_name)
+    ]
 
     print("\nUpdating assets in current directory...")
-
-    for filename, content in assets:
+    
+    # Handle text assets
+    for filename, content in text_assets:
         path = target_dir / filename
         if path.exists() and not skip_confirm:
             print(f"\nWarning: {filename} exists and will be overwritten.")
@@ -1886,6 +2041,42 @@ def update_assets(skip_confirm: bool = False):
 
         path.write_text(content)
         print(f"✓ Updated {filename}")
+    
+    # Handle file assets (like config.html)
+    for dest_path, asset_name in file_assets:
+        dest = target_dir / dest_path
+        
+        # Create parent directory if needed
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        
+        if dest.exists() and not skip_confirm:
+            print(f"\nWarning: {dest_path} exists and will be overwritten.")
+            try:
+                confirm = input("Continue? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\nCancelled.")
+                return
+            if confirm != 'y':
+                print(f"Skipping {dest_path}")
+                continue
+        
+        # Get bundled asset path
+        bundled_path = get_bundled_asset_path(asset_name)
+        if bundled_path and os.path.exists(bundled_path):
+            shutil.copy2(bundled_path, dest)
+            print(f"✓ Updated {dest_path}")
+        else:
+            # Fallback: try to download from repo
+            try:
+                import urllib.request
+                print(f"Downloading {asset_name}...")
+                asset_url = f"{REPO_URL.replace('github.com', 'raw.githubusercontent.com')}/main/src/tally/assets/{asset_name}"
+                with urllib.request.urlopen(asset_url, timeout=10) as response:
+                    content = response.read()
+                dest.write_bytes(content)
+                print(f"✓ Updated {dest_path}")
+            except Exception as e:
+                print(f"✗ Failed to update {dest_path}: {e}")
 
 
 def cmd_explain(args):
@@ -2409,6 +2600,29 @@ Examples:
         help='Filter to specific category'
     )
 
+    # config subcommand
+    config_parser = subparsers.add_parser(
+        'config',
+        help='Open the configuration editor in your browser',
+        description='Launch a web-based editor to manage merchant_categories.csv and settings.yaml.'
+    )
+    config_parser.add_argument(
+        'config',
+        nargs='?',
+        help='Path to config directory (default: ./config)'
+    )
+    config_parser.add_argument(
+        '--port', '-p',
+        type=int,
+        default=8742,
+        help='Port for the local server (default: 8742)'
+    )
+    config_parser.add_argument(
+        '--no-browser',
+        action='store_true',
+        help='Do not open browser automatically'
+    )
+
     # version subcommand
     subparsers.add_parser(
         'version',
@@ -2467,6 +2681,8 @@ Examples:
         cmd_diag(args)
     elif args.command == 'explain':
         cmd_explain(args)
+    elif args.command == 'config':
+        cmd_config(args)
     elif args.command == 'version':
         sha_display = GIT_SHA[:8] if GIT_SHA != 'unknown' else 'unknown'
         print(f"tally {VERSION} ({sha_display})")

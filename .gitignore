@@ -24,6 +24,7 @@ wheels/
 .venv/
 venv/
 ENV/
+sampledata/
 
 # IDE
 .idea/
