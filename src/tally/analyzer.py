@@ -10,6 +10,7 @@ import os
 import re
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 
 from .merchant_utils import normalize_merchant
 from .format_parser import FormatSpec
@@ -1396,6 +1397,14 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
     import json
     embedded_json = export_json(stats, verbose=2)
 
+    # Load Chart.js library for offline use
+    assets_dir = Path(__file__).parent / 'assets'
+    chart_js_path = assets_dir / 'chart.min.js'
+    if chart_js_path.exists():
+        chart_js_content = chart_js_path.read_text()
+    else:
+        chart_js_content = '// Chart.js not found - charts will not render'
+
     # Prepare chart data
     # 1. Monthly spending trend
     by_month = stats['by_month']
@@ -1517,7 +1526,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             window.initSemanticSearch();
         }}
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script>{chart_js_content}</script>
     <style>
         /* Theme CSS Variables */
         :root {{
