@@ -1411,11 +1411,21 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         chart_js_content = '// Chart.js not found - charts will not render'
 
     # Prepare chart data
-    # 1. Monthly spending trend
-    by_month = stats['by_month']
-    sorted_months = sorted(by_month.keys())
+    # 1. Monthly spending trend (excluding Transfers and Cash)
+    # Calculate from classified merchants to match YTD totals
+    spending_by_month = defaultdict(float)
+    all_merchant_dicts = [
+        monthly_merchants, annual_merchants, periodic_merchants,
+        travel_merchants, one_off_merchants, variable_merchants
+    ]
+    for merchants in all_merchant_dicts:
+        for merchant, data in merchants.items():
+            for month, amount in data.get('monthly_amounts', {}).items():
+                spending_by_month[month] += amount
+
+    sorted_months = sorted(spending_by_month.keys())
     monthly_labels = [datetime.strptime(m, '%Y-%m').strftime('%b %Y') for m in sorted_months]
-    monthly_totals = [by_month[m] for m in sorted_months]
+    monthly_totals = [spending_by_month[m] for m in sorted_months]
 
     # Calculate min/max months for date picker (e.g., "2025-01", "2025-12")
     min_month = sorted_months[0] if sorted_months else f"{year}-01"
