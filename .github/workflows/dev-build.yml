@@ -21,6 +21,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
+      git_sha: ${{ github.sha }}
 
   release:
     needs: [prepare, build]
