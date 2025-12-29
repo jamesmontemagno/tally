@@ -3065,14 +3065,6 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         // FilterEngine - Unified Filter Matching
         // ========================================
         const FilterEngine = {{
-            // Map location-based subcategories to location codes
-            locationCategoryMap: {{
-                'barbados': 'br',
-                'hawaii': 'hi',
-                'uk': 'gb',
-                'las vegas': 'nv'
-            }},
-
             // Check if a transaction matches a single filter
             txnMatchesFilter(txn, filter) {{
                 const filterText = filter.text.toLowerCase();
@@ -3092,18 +3084,9 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                     // Check transaction's category data
                     const txnCat = txn.dataset.category || '';
                     if (txnCat.toLowerCase().includes(filterText)) return true;
-                    // Check transaction description for category terms
-                    const desc = txn.querySelector('.txn-desc');
-                    if (desc && desc.textContent.toLowerCase().includes(filterText)) return true;
                     // Check if travel table
                     const tableId = txn.closest('table')?.id;
                     if (tableId === 'travel-table' && filterText === 'travel') return true;
-                    // Check location-based categories
-                    const locationCode = this.locationCategoryMap[filterText];
-                    if (locationCode) {{
-                        const locBadge = txn.querySelector('.txn-location');
-                        return locBadge && locBadge.textContent.toLowerCase() === locationCode;
-                    }}
                     return false;
                 }}
 
@@ -3135,15 +3118,6 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                     if (dataCat && dataCat.includes(filterText)) return true;
                     // Travel table = all Travel category
                     if (tableId === 'travel-table' && filterText === 'travel') return true;
-                    // Location-based categories
-                    const locationCode = this.locationCategoryMap[filterText];
-                    if (locationCode) {{
-                        return txnRows.some(txn => {{
-                            if (txn.dataset.merchant !== merchantId) return false;
-                            const locBadge = txn.querySelector('.txn-location');
-                            return locBadge && locBadge.textContent.toLowerCase() === locationCode;
-                        }});
-                    }}
                     return false;
                 }}
 
