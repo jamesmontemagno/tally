@@ -35,6 +35,7 @@ from .analyzer import (
     analyze_transactions,
     print_summary,
     write_summary_file,
+    write_summary_file_vue,
 )
 
 
@@ -1292,7 +1293,10 @@ def cmd_run(args):
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, config.get('html_filename', 'spending_summary.html'))
 
-        write_summary_file(stats, output_path, year=year, home_locations=home_locations, currency_format=currency_format)
+        # Collect source names for the report subtitle
+        source_names = [s.get('name', 'Unknown') for s in data_sources]
+        write_summary_file_vue(stats, output_path, year=year, home_locations=home_locations,
+                               currency_format=currency_format, sources=source_names)
         if not args.quiet:
             # Make the path clickable using OSC 8 hyperlink escape sequence
             abs_path = os.path.abspath(output_path)

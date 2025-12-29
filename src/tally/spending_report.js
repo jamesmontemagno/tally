@@ -1,883 +1,732 @@
-// spending_report.js - JavaScript for spending report interactivity
+// spending_report.js - Vue 3 app for spending report
 // This file is embedded into the HTML at build time by analyzer.py
 
-// ============================================================
-// CONFIGURATION
-// ============================================================
+const { createApp, ref, reactive, computed, watch, onMounted, nextTick } = Vue;
 
-// Table configuration - declarative column mapping for each table type
-const TABLE_CONFIG = {
-    'monthly-table': {
-        section: 'monthly-section',
-        columns: { merchant: 0, months: 1, count: 2, type: 3, monthly: 4, ytd: 5, pct: 6 },
-        hasMonthlyColumn: true,
-        totalColumn: 'ytd'
-    },
-    'variable-table': {
-        section: 'variable-section',
-        columns: { merchant: 0, category: 1, months: 2, count: 3, monthly: 4, ytd: 5, pct: 6 },
-        hasMonthlyColumn: true,
-        totalColumn: 'ytd'
-    },
-    'annual-table': {
-        section: 'annual-section',
-        columns: { merchant: 0, category: 1, count: 2, total: 3, pct: 4 },
-        hasMonthlyColumn: false,
-        totalColumn: 'total'
-    },
-    'periodic-table': {
-        section: 'periodic-section',
-        columns: { merchant: 0, category: 1, count: 2, total: 3, pct: 4 },
-        hasMonthlyColumn: false,
-        totalColumn: 'total'
-    },
-    'travel-table': {
-        section: 'travel-section',
-        columns: { merchant: 0, category: 1, count: 2, total: 3, pct: 4 },
-        hasMonthlyColumn: false,
-        totalColumn: 'total'
-    },
-    'oneoff-table': {
-        section: 'oneoff-section',
-        columns: { merchant: 0, category: 1, count: 2, total: 3, pct: 4 },
-        hasMonthlyColumn: false,
-        totalColumn: 'total'
-    }
-};
+// Category colors for charts
+const CATEGORY_COLORS = [
+    '#4facfe', '#00f2fe', '#4dffd2', '#ffa94d', '#f5af19',
+    '#f093fb', '#fa709a', '#ff6b6b', '#a855f7', '#3b82f6',
+    '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'
+];
 
-// Month helpers
-const monthNames = {Jan:'01', Feb:'02', Mar:'03', Apr:'04', May:'05', Jun:'06',
-                    Jul:'07', Aug:'08', Sep:'09', Oct:'10', Nov:'11', Dec:'12'};
-const monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+createApp({
+    setup() {
+        // ========== STATE ==========
+        const activeFilters = ref([]);
+        const expandedMerchants = reactive(new Set());
+        const collapsedSections = reactive(new Set());
+        const searchQuery = ref('');
+        const showAutocomplete = ref(false);
+        const autocompleteIndex = ref(-1);
+        const isScrolled = ref(false);
+        const isDarkTheme = ref(true);
+        const chartsCollapsed = ref(false);
+        const helpCollapsed = ref(true);
 
-// ============================================================
-// UTILITY FUNCTIONS
-// ============================================================
+        // Chart refs
+        const monthlyChart = ref(null);
+        const categoryPieChart = ref(null);
+        const categoryByMonthChart = ref(null);
 
-function formatCurrency(amount) {
-    const formatted = amount.toLocaleString('en-US', { maximumFractionDigits: 0 });
-    return window.currencyFormat.replace('{amount}', formatted);
-}
+        // Chart instances
+        let monthlyChartInstance = null;
+        let pieChartInstance = null;
+        let categoryMonthChartInstance = null;
 
-function monthLabelToKey(label) {
-    // "Dec 2025" -> "2025-12"
-    const [mon, year] = label.split(' ');
-    return `${year}-${monthNames[mon]}`;
-}
+        // ========== COMPUTED ==========
 
-function monthKeyToLabel(key) {
-    // "2025-12" -> "Dec 2025"
-    // "2025-01..2025-03" -> "Jan–Mar 2025"
-    if (key.includes('..')) {
-        const [start, end] = key.split('..');
-        const [sy, sm] = start.split('-');
-        const [ey, em] = end.split('-');
-        const startMon = monthLabels[parseInt(sm) - 1];
-        const endMon = monthLabels[parseInt(em) - 1];
-        if (sy === ey) {
-            return `${startMon}–${endMon} ${sy}`;
-        }
-        return `${startMon} ${sy}–${endMon} ${ey}`;
-    }
-    const [year, month] = key.split('-');
-    return `${monthLabels[parseInt(month) - 1]} ${year}`;
-}
+        // Shortcut to spending data
+        const spendingData = computed(() => window.spendingData || { sections: {}, year: 2025, numMonths: 12 });
 
-function monthMatchesFilter(txnMonth, filterText) {
-    // Check for range separator (supports both '..' and ':')
-    const rangeMatch = filterText.match(/^(\d{4}-\d{2})(?:\.\.|:)(\d{4}-\d{2})$/);
-    if (rangeMatch) {
-        const [, start, end] = rangeMatch;
-        return txnMonth >= start && txnMonth <= end;
-    }
-    // Single month: "2025-12"
-    return txnMonth === filterText;
-}
-
-// Normalize merchant ID (same logic as Python make_merchant_id)
-function normalizeMerchantId(name) {
-    return name.replace(/['"]/g, '').replace(/ /g, '_');
-}
-
-// Look up display name from window.displayNames (id → display name mapping)
-function getDisplayName(type, id) {
-    if (!window.displayNames || !window.displayNames[type]) return null;
-    // Try exact match first, then case-insensitive
-    if (window.displayNames[type][id]) return window.displayNames[type][id];
-    const lowerId = id.toLowerCase();
-    for (const [key, value] of Object.entries(window.displayNames[type])) {
-        if (key.toLowerCase() === lowerId) return value;
-    }
-    return null;
-}
-
-// ============================================================
-// FILTER MANAGEMENT
-// ============================================================
-
-function addFilter(text, type, displayText = null) {
-    // Don't add duplicate filters
-    if (window.activeFilters.some(f => f.text === text && f.type === type)) return;
-    const filter = { text, type, mode: 'include' };
-    if (displayText) filter.displayText = displayText;
-    window.activeFilters.push(filter);
-    renderFilters();
-    applyFilters();
-}
-
-function removeFilter(index) {
-    window.activeFilters.splice(index, 1);
-    renderFilters();
-    applyFilters();
-}
-
-function toggleFilter(index) {
-    window.activeFilters[index].mode = window.activeFilters[index].mode === 'include' ? 'exclude' : 'include';
-    renderFilters();
-    applyFilters();
-}
-
-function applyDateRange(value) {
-    const select = document.getElementById('dateRangeSelect');
-    if (value) {
-        // Check if this month/range is already in filters
-        const exists = window.activeFilters.some(f => f.type === 'month' && f.text === value);
-        if (!exists) {
-            addFilter(value, 'month');
-        }
-    }
-    // Reset dropdown to "All Dates" after selection (acts as "add filter" button)
-    if (select) {
-        select.value = '';
-    }
-}
-
-function syncDatePickerWithFilters() {
-    // Reset dropdown when filters change (multi-select via chips)
-    const select = document.getElementById('dateRangeSelect');
-    if (select) {
-        select.value = '';
-    }
-}
-
-function renderFilters() {
-    const container = document.getElementById('filterChips');
-    let html = window.activeFilters.map((f, i) => {
-        // Use displayText if available, otherwise look up or format based on type
-        let displayText = f.displayText || f.text;
-        if (f.type === 'month') {
-            displayText = monthKeyToLabel(f.text);
-        } else if (!f.displayText) {
-            // Look up display name from ID for merchant, category, location
-            const lookupName = getDisplayName(f.type, f.text);
-            if (lookupName) displayText = lookupName;
-        }
-        const typeChar = f.type === 'month' ? 'd' : f.type.charAt(0);
-        return `
-            <div class="filter-chip ${f.type} ${f.mode}" data-index="${i}">
-                <span class="chip-type">${typeChar}</span>
-                <span class="chip-text">${displayText}</span>
-                <span class="chip-remove" data-action="remove">×</span>
-            </div>
-        `;
-    }).join('');
-
-    // Add "Clear all" button if there are multiple filters
-    if (window.activeFilters.length > 1) {
-        html += '<button class="clear-all-btn" onclick="clearAllFilters()">Clear all</button>';
-    }
-
-    container.innerHTML = html;
-
-    // Add click handlers
-    container.querySelectorAll('.filter-chip').forEach(chip => {
-        chip.addEventListener('click', (e) => {
-            const idx = parseInt(chip.dataset.index);
-            if (e.target.dataset.action === 'remove') {
-                removeFilter(idx);
-            } else {
-                toggleFilter(idx);
-            }
+        // Report title and subtitle
+        const title = computed(() => `${spendingData.value.year} Spending Report`);
+        const subtitle = computed(() => {
+            const data = spendingData.value;
+            const sources = data.sources || [];
+            return sources.length > 0 ? `Data from ${sources.join(', ')}` : '';
         });
-    });
 
-    // Sync date picker with current filters
-    syncDatePickerWithFilters();
-}
+        // Core filtering - returns sections with filtered merchants and transactions
+        const filteredSections = computed(() => {
+            const result = {};
+            const data = spendingData.value;
 
-function clearAllFilters() {
-    window.activeFilters = [];
-    renderFilters();
-    applyFilters();
-}
+            for (const [sectionId, section] of Object.entries(data.sections || {})) {
+                const filteredMerchants = {};
 
-// ============================================================
-// FILTER ENGINE (from sectionData - single source of truth)
-// ============================================================
+                for (const [merchantId, merchant] of Object.entries(section.merchants || {})) {
+                    // Filter transactions
+                    const filteredTxns = merchant.transactions.filter(txn =>
+                        passesFilters(txn, merchant)
+                    );
 
-/**
- * Filter sectionData based on active filters.
- * Returns computed state for rendering - no DOM mutations.
- */
-function filterSectionData(filters) {
-    const includeFilters = filters.filter(f => f.mode === 'include');
-    const excludeFilters = filters.filter(f => f.mode === 'exclude');
+                    if (filteredTxns.length > 0) {
+                        const filteredTotal = filteredTxns.reduce((sum, t) => sum + t.amount, 0);
+                        const months = new Set(filteredTxns.map(t => t.month));
 
-    const result = {
-        sections: {},           // Filtered merchants per section
-        sectionTotals: {},      // Total per section
-        merchantTotals: {},     // Per-merchant totals
-        merchantMonths: {},     // Unique months per merchant
-        merchantCounts: {},     // Transaction counts
-        totalAmount: 0,
-        numFilteredMonths: window.sectionData.numMonths,
-        aggregations: {
-            byMonth: {},
-            byCategory: {},
-            byCategoryByMonth: {}
-        }
-    };
-
-    // Calculate filtered month count if month filters present
-    const monthFilters = filters.filter(f => f.type === 'month' && f.mode === 'include');
-    if (monthFilters.length > 0) {
-        const allMonths = new Set();
-        monthFilters.forEach(f => {
-            if (f.text.includes('..')) {
-                // Range: "2025-01..2025-03"
-                expandMonthRange(f.text).forEach(m => allMonths.add(m));
-            } else {
-                allMonths.add(f.text);
-            }
-        });
-        result.numFilteredMonths = allMonths.size || 1;
-    }
-
-    // Process each section
-    for (const [sectionId, section] of Object.entries(window.sectionData.sections)) {
-        result.sections[sectionId] = {};
-        result.sectionTotals[sectionId] = 0;
-
-        for (const [merchantId, merchant] of Object.entries(section.merchants)) {
-            // Filter transactions
-            const matchingTxns = merchant.transactions.filter(txn =>
-                txnPassesFilters(txn, merchant, sectionId, includeFilters, excludeFilters)
-            );
-
-            if (matchingTxns.length === 0) continue;
-
-            // Store filtered merchant data
-            const filteredTotal = matchingTxns.reduce((sum, t) => sum + t.amount, 0);
-            const filteredMonths = new Set(matchingTxns.map(t => t.month));
-
-            result.sections[sectionId][merchantId] = {
-                ...merchant,
-                filteredTxns: matchingTxns,
-                filteredTotal,
-                filteredMonths: filteredMonths.size,
-                filteredCount: matchingTxns.length
-            };
-
-            result.sectionTotals[sectionId] += filteredTotal;
-            result.merchantTotals[merchantId] = filteredTotal;
-            result.merchantMonths[merchantId] = filteredMonths.size;
-            result.merchantCounts[merchantId] = matchingTxns.length;
-            result.totalAmount += filteredTotal;
-
-            // Aggregate for charts
-            matchingTxns.forEach(txn => {
-                // By month
-                result.aggregations.byMonth[txn.month] = (result.aggregations.byMonth[txn.month] || 0) + txn.amount;
-
-                // By category (use categoryPath for consistency with pie chart)
-                const catKey = merchant.categoryPath || 'unknown';
-                result.aggregations.byCategory[catKey] = (result.aggregations.byCategory[catKey] || 0) + txn.amount;
-
-                // By category by month (use main category)
-                const mainCat = merchant.category || 'Unknown';
-                if (!result.aggregations.byCategoryByMonth[mainCat]) {
-                    result.aggregations.byCategoryByMonth[mainCat] = {};
+                        filteredMerchants[merchantId] = {
+                            ...merchant,
+                            filteredTxns,
+                            filteredTotal,
+                            filteredCount: filteredTxns.length,
+                            filteredMonths: months.size
+                        };
+                    }
                 }
-                result.aggregations.byCategoryByMonth[mainCat][txn.month] =
-                    (result.aggregations.byCategoryByMonth[mainCat][txn.month] || 0) + txn.amount;
+
+                if (Object.keys(filteredMerchants).length > 0) {
+                    result[sectionId] = {
+                        ...section,
+                        filteredMerchants
+                    };
+                }
+            }
+
+            return result;
+        });
+
+        // Only sections with visible merchants
+        const visibleSections = computed(() => filteredSections.value);
+
+        // Totals per section
+        const sectionTotals = computed(() => {
+            const totals = {};
+            for (const [sectionId, section] of Object.entries(filteredSections.value)) {
+                totals[sectionId] = Object.values(section.filteredMerchants)
+                    .reduce((sum, m) => sum + m.filteredTotal, 0);
+            }
+            return totals;
+        });
+
+        // Grand total
+        const grandTotal = computed(() =>
+            Object.values(sectionTotals.value).reduce((sum, t) => sum + t, 0)
+        );
+
+        // Monthly budget (monthly + variable sections)
+        const monthlyBudget = computed(() => {
+            const monthly = sectionTotals.value.monthly || 0;
+            const variable = sectionTotals.value.variable || 0;
+            return (monthly + variable) / numFilteredMonths.value;
+        });
+
+        // Non-recurring total
+        const nonRecurringTotal = computed(() => {
+            const { annual = 0, periodic = 0, travel = 0, oneoff = 0 } = sectionTotals.value;
+            return annual + periodic + travel + oneoff;
+        });
+
+        // Monthly recurring average
+        const monthlyRecurringAvg = computed(() => {
+            const monthly = sectionTotals.value.monthly || 0;
+            return monthly / numFilteredMonths.value;
+        });
+
+        // Variable monthly average
+        const variableMonthlyAvg = computed(() => {
+            const variable = sectionTotals.value.variable || 0;
+            return variable / numFilteredMonths.value;
+        });
+
+        // Uncategorized total
+        const uncategorizedTotal = computed(() => {
+            return sectionTotals.value.unknown || 0;
+        });
+
+        // Number of months in filter (for monthly averages)
+        const numFilteredMonths = computed(() => {
+            const monthFilters = activeFilters.value.filter(f =>
+                f.type === 'month' && f.mode === 'include'
+            );
+            if (monthFilters.length === 0) return spendingData.value.numMonths || 12;
+
+            const months = new Set();
+            monthFilters.forEach(f => {
+                if (f.text.includes('..')) {
+                    expandMonthRange(f.text).forEach(m => months.add(m));
+                } else {
+                    months.add(f.text);
+                }
+            });
+            return months.size || 1;
+        });
+
+        // Chart data aggregations
+        const chartAggregations = computed(() => {
+            const byMonth = {};
+            const byCategory = {};
+            const byCategoryByMonth = {};
+
+            for (const section of Object.values(filteredSections.value)) {
+                for (const merchant of Object.values(section.filteredMerchants)) {
+                    for (const txn of merchant.filteredTxns) {
+                        // By month
+                        byMonth[txn.month] = (byMonth[txn.month] || 0) + txn.amount;
+
+                        // By main category
+                        const cat = merchant.category;
+                        byCategory[cat] = (byCategory[cat] || 0) + txn.amount;
+
+                        // By category by month
+                        if (!byCategoryByMonth[cat]) byCategoryByMonth[cat] = {};
+                        byCategoryByMonth[cat][txn.month] =
+                            (byCategoryByMonth[cat][txn.month] || 0) + txn.amount;
+                    }
+                }
+            }
+
+            return { byMonth, byCategory, byCategoryByMonth };
+        });
+
+        // Filtered months for charts (respects month filters)
+        const filteredMonthsForCharts = computed(() => {
+            const monthFilters = activeFilters.value.filter(f =>
+                f.type === 'month' && f.mode === 'include'
+            );
+            if (monthFilters.length === 0) return availableMonths.value;
+
+            // Build set of included months
+            const includedMonths = new Set();
+            monthFilters.forEach(f => {
+                if (f.text.includes('..')) {
+                    expandMonthRange(f.text).forEach(m => includedMonths.add(m));
+                } else {
+                    includedMonths.add(f.text);
+                }
+            });
+
+            return availableMonths.value.filter(m => includedMonths.has(m.key));
+        });
+
+        // Autocomplete items
+        const autocompleteItems = computed(() => {
+            const items = [];
+            const data = spendingData.value;
+
+            // Merchants
+            for (const section of Object.values(data.sections || {})) {
+                for (const [id, merchant] of Object.entries(section.merchants || {})) {
+                    items.push({
+                        type: 'merchant',
+                        filterText: id,
+                        displayText: merchant.displayName,
+                        id: `m:${id}`
+                    });
+                }
+            }
+
+            // Categories (unique)
+            const categories = new Set();
+            const subcategories = new Set();
+            for (const section of Object.values(data.sections || {})) {
+                for (const merchant of Object.values(section.merchants || {})) {
+                    categories.add(merchant.category);
+                    subcategories.add(merchant.subcategory);
+                }
+            }
+            categories.forEach(c => items.push({
+                type: 'category', filterText: c, displayText: c, id: `c:${c}`
+            }));
+            subcategories.forEach(s => {
+                if (!categories.has(s)) {
+                    items.push({
+                        type: 'category', filterText: s, displayText: s, id: `cs:${s}`
+                    });
+                }
+            });
+
+            // Locations (unique)
+            const locations = new Set();
+            for (const section of Object.values(data.sections || {})) {
+                for (const merchant of Object.values(section.merchants || {})) {
+                    for (const txn of merchant.transactions || []) {
+                        if (txn.location) locations.add(txn.location);
+                    }
+                }
+            }
+            locations.forEach(l => items.push({
+                type: 'location', filterText: l, displayText: l, id: `l:${l}`
+            }));
+
+            return items;
+        });
+
+        // Filtered autocomplete based on search
+        const filteredAutocomplete = computed(() => {
+            const q = searchQuery.value.toLowerCase().trim();
+            if (!q) return [];
+            return autocompleteItems.value
+                .filter(item => item.displayText.toLowerCase().includes(q))
+                .slice(0, 10);
+        });
+
+        // Available months for date picker
+        const availableMonths = computed(() => {
+            const months = new Set();
+            for (const section of Object.values(spendingData.value.sections || {})) {
+                for (const merchant of Object.values(section.merchants || {})) {
+                    for (const txn of merchant.transactions || []) {
+                        months.add(txn.month);
+                    }
+                }
+            }
+            return Array.from(months).sort().map(m => ({
+                key: m,
+                label: formatMonthLabel(m)
+            }));
+        });
+
+        // ========== METHODS ==========
+
+        function passesFilters(txn, merchant) {
+            const includes = activeFilters.value.filter(f => f.mode === 'include');
+            const excludes = activeFilters.value.filter(f => f.mode === 'exclude');
+
+            // Check excludes first
+            for (const f of excludes) {
+                if (matchesFilter(txn, merchant, f)) return false;
+            }
+
+            // Group includes by type
+            const byType = {};
+            includes.forEach(f => {
+                if (!byType[f.type]) byType[f.type] = [];
+                byType[f.type].push(f);
+            });
+
+            // AND across types, OR within type
+            for (const [type, filters] of Object.entries(byType)) {
+                const anyMatch = filters.some(f => matchesFilter(txn, merchant, f));
+                if (!anyMatch) return false;
+            }
+
+            return true;
+        }
+
+        function matchesFilter(txn, merchant, filter) {
+            const text = filter.text.toLowerCase();
+            switch (filter.type) {
+                case 'merchant':
+                    return merchant.id.toLowerCase() === text ||
+                           merchant.displayName.toLowerCase() === text;
+                case 'category':
+                    return merchant.category.toLowerCase().includes(text) ||
+                           merchant.subcategory.toLowerCase().includes(text) ||
+                           (merchant.categoryPath || '').toLowerCase().includes(text);
+                case 'location':
+                    return (txn.location || '').toLowerCase() === text;
+                case 'month':
+                    return monthMatches(txn.month, filter.text);
+                default:
+                    return false;
+            }
+        }
+
+        function monthMatches(txnMonth, filterText) {
+            if (filterText.includes('..')) {
+                const [start, end] = filterText.split('..');
+                return txnMonth >= start && txnMonth <= end;
+            }
+            return txnMonth === filterText;
+        }
+
+        function addFilter(text, type, displayText = null) {
+            if (activeFilters.value.some(f => f.text === text && f.type === type)) return;
+            activeFilters.value.push({ text, type, mode: 'include', displayText: displayText || text });
+            searchQuery.value = '';
+            showAutocomplete.value = false;
+            autocompleteIndex.value = -1;
+        }
+
+        function removeFilter(index) {
+            activeFilters.value.splice(index, 1);
+        }
+
+        function toggleFilterMode(index) {
+            const f = activeFilters.value[index];
+            f.mode = f.mode === 'include' ? 'exclude' : 'include';
+        }
+
+        function clearFilters() {
+            activeFilters.value = [];
+        }
+
+        function addMonthFilter(month) {
+            if (month) addFilter(month, 'month', formatMonthLabel(month));
+        }
+
+        function toggleExpand(merchantId) {
+            if (expandedMerchants.has(merchantId)) {
+                expandedMerchants.delete(merchantId);
+            } else {
+                expandedMerchants.add(merchantId);
+            }
+        }
+
+        function toggleSection(sectionId) {
+            if (collapsedSections.has(sectionId)) {
+                collapsedSections.delete(sectionId);
+            } else {
+                collapsedSections.add(sectionId);
+            }
+        }
+
+        function sortedMerchants(merchants, sectionId) {
+            // Sort by total descending
+            return Object.entries(merchants || {})
+                .sort((a, b) => b[1].filteredTotal - a[1].filteredTotal)
+                .reduce((acc, [id, m]) => { acc[id] = m; return acc; }, {});
+        }
+
+        // Formatting helpers
+        function formatCurrency(amount) {
+            if (amount === undefined || amount === null) return '$0';
+            const rounded = Math.round(amount);
+            return '$' + rounded.toLocaleString('en-US');
+        }
+
+        function formatDate(dateStr) {
+            if (!dateStr) return '';
+            // Handle MM/DD format from Python
+            if (dateStr.match(/^\d{1,2}\/\d{1,2}$/)) {
+                const [month, day] = dateStr.split('/');
+                const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                return `${months[parseInt(month)-1]} ${parseInt(day)}`;
+            }
+            // Handle YYYY-MM-DD format
+            const d = new Date(dateStr + 'T12:00:00');
+            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        }
+
+        function formatMonthLabel(key) {
+            if (!key) return '';
+            const [year, month] = key.split('-');
+            const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            return `${months[parseInt(month)-1]} ${year}`;
+        }
+
+        function formatPct(value, total) {
+            if (!total || total === 0) return '0%';
+            return ((value / total) * 100).toFixed(1) + '%';
+        }
+
+        function filterTypeChar(type) {
+            return { category: 'c', merchant: 'm', location: 'l', month: 'd' }[type] || '?';
+        }
+
+        function getLocationClass(location) {
+            const home = spendingData.value.homeState || 'WA';
+            if (location === home) return 'home';
+            if (location && location.length > 2) return 'intl'; // International
+            return '';
+        }
+
+        function expandMonthRange(rangeStr) {
+            const [start, end] = rangeStr.split('..');
+            const months = [];
+            let current = start;
+            while (current <= end) {
+                months.push(current);
+                const [y, m] = current.split('-').map(Number);
+                const nextM = m === 12 ? 1 : m + 1;
+                const nextY = m === 12 ? y + 1 : y;
+                current = `${nextY}-${String(nextM).padStart(2, '0')}`;
+            }
+            return months;
+        }
+
+        // ========== SEARCH/AUTOCOMPLETE ==========
+
+        function onSearchInput() {
+            showAutocomplete.value = true;
+            autocompleteIndex.value = -1;
+        }
+
+        function onSearchKeydown(e) {
+            const items = filteredAutocomplete.value;
+            if (!items.length) return;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                autocompleteIndex.value = Math.min(autocompleteIndex.value + 1, items.length - 1);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                autocompleteIndex.value = Math.max(autocompleteIndex.value - 1, 0);
+            } else if (e.key === 'Enter' && autocompleteIndex.value >= 0) {
+                e.preventDefault();
+                selectAutocompleteItem(items[autocompleteIndex.value]);
+            } else if (e.key === 'Escape') {
+                showAutocomplete.value = false;
+                autocompleteIndex.value = -1;
+            }
+        }
+
+        function selectAutocompleteItem(item) {
+            addFilter(item.filterText, item.type, item.displayText);
+        }
+
+        // ========== THEME ==========
+
+        function toggleTheme() {
+            isDarkTheme.value = !isDarkTheme.value;
+            document.documentElement.setAttribute('data-theme', isDarkTheme.value ? 'dark' : 'light');
+            localStorage.setItem('theme', isDarkTheme.value ? 'dark' : 'light');
+        }
+
+        function initTheme() {
+            const saved = localStorage.getItem('theme');
+            if (saved === 'light') {
+                isDarkTheme.value = false;
+                document.documentElement.setAttribute('data-theme', 'light');
+            }
+        }
+
+        // ========== URL HASH ==========
+
+        function filtersToHash() {
+            if (activeFilters.value.length === 0) {
+                history.replaceState(null, '', location.pathname);
+                return;
+            }
+            const typeChar = { category: 'c', merchant: 'm', location: 'l', month: 'd' };
+            const parts = activeFilters.value.map(f => {
+                const mode = f.mode === 'exclude' ? '-' : '+';
+                return `${mode}${typeChar[f.type]}:${encodeURIComponent(f.text)}`;
+            });
+            history.replaceState(null, '', '#' + parts.join('&'));
+        }
+
+        function hashToFilters() {
+            const hash = location.hash.slice(1);
+            if (!hash) return;
+            const typeMap = { c: 'category', m: 'merchant', l: 'location', d: 'month' };
+            hash.split('&').forEach(part => {
+                const mode = part[0] === '-' ? 'exclude' : 'include';
+                const start = part[0] === '+' || part[0] === '-' ? 1 : 0;
+                const type = typeMap[part[start]] || 'category';
+                const text = decodeURIComponent(part.slice(part.indexOf(':') + 1));
+                if (text && !activeFilters.value.some(f => f.text === text && f.type === type)) {
+                    const displayText = type === 'month' ? formatMonthLabel(text) : text;
+                    activeFilters.value.push({ text, type, mode, displayText });
+                }
             });
         }
-    }
 
-    return result;
-}
+        // ========== CHARTS ==========
 
-/**
- * Check if a transaction passes all filters.
- */
-function txnPassesFilters(txn, merchant, sectionId, includeFilters, excludeFilters) {
-    // Group filters by type
-    const groupByType = (filters) => {
-        const groups = {};
-        filters.forEach(f => {
-            if (!groups[f.type]) groups[f.type] = [];
-            groups[f.type].push(f);
-        });
-        return groups;
-    };
-
-    const includeGroups = groupByType(includeFilters);
-    const excludeGroups = groupByType(excludeFilters);
-
-    // Check exclude filters first (any match = excluded)
-    for (const [type, filters] of Object.entries(excludeGroups)) {
-        if (filters.some(f => matchesFilter(txn, merchant, sectionId, f))) {
-            return false;
-        }
-    }
-
-    // Check include filters (AND across types, OR within type)
-    for (const [type, filters] of Object.entries(includeGroups)) {
-        const anyMatch = filters.some(f => matchesFilter(txn, merchant, sectionId, f));
-        if (!anyMatch) return false;
-    }
-
-    return true;
-}
-
-/**
- * Check if a single filter matches a transaction.
- */
-function matchesFilter(txn, merchant, sectionId, filter) {
-    const normalizedFilterText = filter.text.toLowerCase();
-
-    switch (filter.type) {
-        case 'merchant':
-            // Match by merchant ID (normalized)
-            const merchantId = normalizeMerchantId(merchant.displayName || merchant.id).toLowerCase();
-            return merchantId === normalizeMerchantId(filter.text).toLowerCase();
-
-        case 'category':
-            // Match against categoryPath (e.g., "food/grocery")
-            const catPath = (merchant.categoryPath || '').toLowerCase();
-            return catPath.includes(normalizedFilterText);
-
-        case 'location':
-            // Match transaction location
-            const txnLocation = (txn.location || '').toLowerCase();
-            return txnLocation === normalizedFilterText;
-
-        case 'month':
-            // Match transaction month (supports ranges)
-            return monthMatchesFilter(txn.month, filter.text);
-
-        default:
-            return false;
-    }
-}
-
-/**
- * Expand a month range into individual months.
- * "2025-01..2025-03" -> ["2025-01", "2025-02", "2025-03"]
- */
-function expandMonthRange(rangeStr) {
-    const [start, end] = rangeStr.split('..');
-    const months = [];
-    let current = start;
-    while (current <= end) {
-        months.push(current);
-        // Increment month
-        const [y, m] = current.split('-').map(Number);
-        const nextM = m === 12 ? 1 : m + 1;
-        const nextY = m === 12 ? y + 1 : y;
-        current = `${nextY}-${String(nextM).padStart(2, '0')}`;
-    }
-    return months;
-}
-
-// ============================================================
-// RENDERING FUNCTIONS
-// ============================================================
-
-/**
- * Update DOM visibility based on filter state.
- */
-function renderVisibility(state) {
-    // For each section/table
-    for (const [tableId, config] of Object.entries(TABLE_CONFIG)) {
-        const table = document.getElementById(tableId);
-        if (!table) continue;
-
-        const tbody = table.querySelector('tbody');
-        if (!tbody) continue;
-
-        const sectionId = tableId.replace('-table', '-section');
-        const filteredSection = state.sections[tableId.replace('-table', '-table')] || {};
-
-        // Show/hide merchant rows
-        tbody.querySelectorAll('.merchant-row').forEach(row => {
-            const merchantId = row.dataset.merchant;
-            const isVisible = merchantId && state.merchantTotals[merchantId] !== undefined;
-            row.classList.toggle('hidden', !isVisible);
-
-            // Show/hide transaction rows
-            if (isVisible) {
-                row.querySelectorAll('.txn-row').forEach(txnRow => {
-                    // For now, show all txn rows if merchant is visible
-                    // Could filter by month here if needed
-                    txnRow.classList.remove('hidden');
+        function initCharts() {
+            // Monthly trend chart
+            if (monthlyChart.value) {
+                const ctx = monthlyChart.value.getContext('2d');
+                const labels = availableMonths.value.map(m => m.label);
+                monthlyChartInstance = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: 'Monthly Spending',
+                            data: [],
+                            backgroundColor: '#4facfe',
+                            borderRadius: 4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: v => '$' + (v/1000).toFixed(0) + 'k'
+                                }
+                            }
+                        },
+                        onClick: (e, elements) => {
+                            if (elements.length > 0) {
+                                const idx = elements[0].index;
+                                const month = availableMonths.value[idx];
+                                if (month) addFilter(month.key, 'month', month.label);
+                            }
+                        }
+                    }
                 });
             }
-        });
 
-        // Show/hide section if no visible merchants
-        const section = document.getElementById(config.section);
-        if (section) {
-            const hasVisibleMerchants = Object.keys(state.sections[tableId] || {}).length > 0;
-            section.classList.toggle('hidden', !hasVisibleMerchants);
-        }
-    }
-}
-
-/**
- * Update totals in the DOM based on filter state.
- */
-function renderTotals(state) {
-    const numMonths = state.numFilteredMonths || 1;
-
-    // Update each table's totals
-    for (const [tableId, config] of Object.entries(TABLE_CONFIG)) {
-        const table = document.getElementById(tableId);
-        if (!table) continue;
-
-        const cols = config.columns;
-        const sectionTotal = state.sectionTotals[tableId] || 0;
-
-        // Update merchant row totals
-        table.querySelectorAll('.merchant-row').forEach(row => {
-            const merchantId = row.dataset.merchant;
-            const total = state.merchantTotals[merchantId];
-            if (total === undefined) return;
-
-            const count = state.merchantCounts[merchantId] || 0;
-            const pct = sectionTotal > 0 ? (total / sectionTotal * 100) : 0;
-
-            // Update cells based on config
-            if (cols.count !== undefined) {
-                row.cells[cols.count].textContent = count;
+            // Category pie chart
+            if (categoryPieChart.value) {
+                const ctx = categoryPieChart.value.getContext('2d');
+                pieChartInstance = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            data: [],
+                            backgroundColor: CATEGORY_COLORS
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'right',
+                                labels: { boxWidth: 12, padding: 8 }
+                            }
+                        },
+                        onClick: (e, elements) => {
+                            if (elements.length > 0) {
+                                const idx = elements[0].index;
+                                const label = pieChartInstance.data.labels[idx];
+                                if (label) addFilter(label, 'category');
+                            }
+                        }
+                    }
+                });
             }
-            if (cols.total !== undefined) {
-                row.cells[cols.total].innerHTML = formatCurrency(total);
+
+            // Category by month chart
+            if (categoryByMonthChart.value) {
+                const ctx = categoryByMonthChart.value.getContext('2d');
+                const labels = availableMonths.value.map(m => m.label);
+                categoryMonthChartInstance = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: []
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'top',
+                                labels: { boxWidth: 12, padding: 8 }
+                            }
+                        },
+                        scales: {
+                            x: { stacked: true },
+                            y: {
+                                stacked: true,
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: v => '$' + (v/1000).toFixed(0) + 'k'
+                                }
+                            }
+                        }
+                    }
+                });
             }
-            if (cols.ytd !== undefined) {
-                row.cells[cols.ytd].innerHTML = formatCurrency(total);
-            }
-            if (cols.monthly !== undefined && config.hasMonthlyColumn) {
-                const monthly = total / numMonths;
-                row.cells[cols.monthly].innerHTML = formatCurrency(monthly) + '/mo';
-            }
-            if (cols.pct !== undefined) {
-                row.cells[cols.pct].textContent = pct.toFixed(1) + '%';
-            }
-        });
 
-        // Update section total row
-        const totalRow = table.querySelector('.total-row');
-        if (totalRow) {
-            if (cols.ytd !== undefined) {
-                totalRow.cells[cols.ytd].innerHTML = formatCurrency(sectionTotal);
-            }
-            if (cols.total !== undefined) {
-                totalRow.cells[cols.total].innerHTML = formatCurrency(sectionTotal);
-            }
-            if (cols.monthly !== undefined && config.hasMonthlyColumn) {
-                const monthly = sectionTotal / numMonths;
-                totalRow.cells[cols.monthly].innerHTML = formatCurrency(monthly) + '/mo';
-            }
-        }
-    }
-
-    // Update summary cards
-    updateSummaryCards(state);
-}
-
-/**
- * Update the summary cards at the top of the page.
- */
-function updateSummaryCards(state) {
-    const numMonths = state.numFilteredMonths || 1;
-
-    // Monthly budget card
-    const monthlyTotal = (state.sectionTotals['monthly-table'] || 0);
-    const variableTotal = (state.sectionTotals['variable-table'] || 0);
-    const monthlyBudget = (monthlyTotal + variableTotal) / numMonths;
-
-    const monthlyCard = document.querySelector('.summary-card:nth-child(1)');
-    if (monthlyCard) {
-        const amountEl = monthlyCard.querySelector('.amount');
-        if (amountEl) amountEl.textContent = formatCurrency(monthlyBudget) + '/mo';
-    }
-
-    // Non-recurring card
-    const annualTotal = state.sectionTotals['annual-table'] || 0;
-    const periodicTotal = state.sectionTotals['periodic-table'] || 0;
-    const travelTotal = state.sectionTotals['travel-table'] || 0;
-    const oneoffTotal = state.sectionTotals['oneoff-table'] || 0;
-    const nonRecurring = annualTotal + periodicTotal + travelTotal + oneoffTotal;
-
-    const nonRecurringCard = document.querySelector('.summary-card:nth-child(2)');
-    if (nonRecurringCard) {
-        const amountEl = nonRecurringCard.querySelector('.amount');
-        if (amountEl) {
-            const pct = window.originalTotals.totalYtd > 0
-                ? (nonRecurring / window.originalTotals.totalYtd * 100)
-                : 0;
-            amountEl.textContent = `${formatCurrency(nonRecurring)} (${pct.toFixed(1)}%)`;
-        }
-    }
-
-    // Total spending card
-    const totalCard = document.querySelector('.summary-card:nth-child(3)');
-    if (totalCard) {
-        const amountEl = totalCard.querySelector('.amount');
-        if (amountEl) {
-            const pct = window.originalTotals.totalYtd > 0
-                ? (state.totalAmount / window.originalTotals.totalYtd * 100)
-                : 0;
-            amountEl.textContent = `${formatCurrency(state.totalAmount)} (${pct.toFixed(1)}%)`;
-        }
-    }
-}
-
-// ============================================================
-// MAIN FILTER APPLICATION
-// ============================================================
-
-function applyFilters() {
-    if (window.activeFilters.length === 0) {
-        // No filters - reset to original state
-        resetToOriginalState();
-        return;
-    }
-
-    const state = filterSectionData(window.activeFilters);
-    renderVisibility(state);
-    renderTotals(state);
-
-    // Update charts if available
-    if (typeof updateChartsFromFilters === 'function') {
-        updateChartsFromFilters(state);
-    }
-}
-
-function resetToOriginalState() {
-    // Show all rows
-    document.querySelectorAll('.merchant-row, .txn-row').forEach(row => {
-        row.classList.remove('hidden');
-    });
-
-    // Show all sections
-    document.querySelectorAll('[id$="-section"]').forEach(section => {
-        section.classList.remove('hidden');
-    });
-
-    // Compute state with no filters (all transactions) and update everything
-    const state = filterSectionData([]);
-    renderTotals(state);
-    updateChartsFromFilters(state);
-}
-
-// ============================================================
-// URL HASH PERSISTENCE
-// ============================================================
-
-function filtersToHash() {
-    if (window.activeFilters.length === 0) {
-        history.replaceState(null, '', window.location.pathname);
-        return;
-    }
-
-    const typeToChar = {category: 'c', merchant: 'm', location: 'l', month: 'd'};
-    const parts = window.activeFilters.map(f => {
-        const modePrefix = f.mode === 'exclude' ? '-' : '+';
-        const typeChar = typeToChar[f.type] || 'c';
-        return `${modePrefix}${typeChar}:${encodeURIComponent(f.text)}`;
-    });
-
-    history.replaceState(null, '', '#' + parts.join('&'));
-}
-
-function hashToFilters() {
-    const hash = window.location.hash.slice(1);
-    if (!hash) return;
-
-    const typeMap = {c: 'category', m: 'merchant', l: 'location', d: 'month'};
-    const parts = hash.split('&');
-    parts.forEach(part => {
-        if (part.length < 2) return;
-
-        // Handle both formats: "+c:value" (with mode) and "c:value" (without mode)
-        let mode = 'include';
-        let startIdx = 0;
-
-        if (part.charAt(0) === '+' || part.charAt(0) === '-') {
-            mode = part.charAt(0) === '-' ? 'exclude' : 'include';
-            startIdx = 1;
+            updateCharts();
         }
 
-        const typeChar = part.charAt(startIdx);
-        const colonIdx = part.indexOf(':', startIdx);
-        if (colonIdx === -1) return;
+        function updateCharts() {
+            const agg = chartAggregations.value;
+            const monthsToShow = filteredMonthsForCharts.value;
 
-        const type = typeMap[typeChar] || 'category';
-        const text = decodeURIComponent(part.slice(colonIdx + 1));
-        if (text && !window.activeFilters.some(f => f.text === text && f.type === type)) {
-            window.activeFilters.push({ text, type, mode });
-        }
-    });
+            // Update monthly trend
+            if (monthlyChartInstance) {
+                const labels = monthsToShow.map(m => m.label);
+                const data = monthsToShow.map(m => agg.byMonth[m.key] || 0);
+                monthlyChartInstance.data.labels = labels;
+                monthlyChartInstance.data.datasets[0].data = data;
+                monthlyChartInstance.update();
+            }
 
-    if (window.activeFilters.length > 0) {
-        renderFilters();
-        applyFilters();
-    }
-}
+            // Update category pie
+            if (pieChartInstance) {
+                const entries = Object.entries(agg.byCategory)
+                    .filter(([_, v]) => v > 0)
+                    .sort((a, b) => b[1] - a[1]);
+                pieChartInstance.data.labels = entries.map(e => e[0]);
+                pieChartInstance.data.datasets[0].data = entries.map(e => e[1]);
+                pieChartInstance.update();
+            }
 
-// Update hash when filters change (patch applyFilters)
-const originalApplyFilters = applyFilters;
-applyFilters = function() {
-    originalApplyFilters();
-    filtersToHash();
-};
+            // Update category by month (top 8 categories only)
+            if (categoryMonthChartInstance) {
+                const labels = monthsToShow.map(m => m.label);
+                const categories = Object.keys(agg.byCategoryByMonth).sort((a, b) => {
+                    const totalA = Object.values(agg.byCategoryByMonth[a]).reduce((s, v) => s + v, 0);
+                    const totalB = Object.values(agg.byCategoryByMonth[b]).reduce((s, v) => s + v, 0);
+                    return totalB - totalA;
+                }).slice(0, 8); // Top 8 categories
 
-// Listen for hash changes
-window.addEventListener('hashchange', () => {
-    window.activeFilters = [];
-    hashToFilters();
-});
+                const datasets = categories.map((cat, i) => ({
+                    label: cat,
+                    data: monthsToShow.map(m => agg.byCategoryByMonth[cat][m.key] || 0),
+                    backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length]
+                }));
 
-// ============================================================
-// AUTOCOMPLETE & SEARCH
-// ============================================================
-
-let selectedIndex = -1;
-
-function setupAutocomplete() {
-    const searchInput = document.getElementById('searchInput');
-    const autocompleteList = document.getElementById('autocompleteList');
-
-    if (!searchInput || !autocompleteList) return;
-
-    searchInput.addEventListener('input', (e) => {
-        const val = e.target.value.toLowerCase().trim();
-        autocompleteList.innerHTML = '';
-        selectedIndex = -1;
-
-        if (!val) {
-            autocompleteList.classList.remove('active');
-            return;
+                categoryMonthChartInstance.data.labels = labels;
+                categoryMonthChartInstance.data.datasets = datasets;
+                categoryMonthChartInstance.update();
+            }
         }
 
-        // Filter autocomplete data
-        const matches = window.autocompleteData.filter(item =>
-            item.text.toLowerCase().includes(val)
-        ).slice(0, 10);
+        // ========== SCROLL HANDLING ==========
 
-        if (matches.length === 0) {
-            autocompleteList.classList.remove('active');
-            return;
+        function handleScroll() {
+            isScrolled.value = window.scrollY > 50;
         }
 
-        matches.forEach((item, idx) => {
-            const div = document.createElement('div');
-            div.className = 'autocomplete-item';
-            div.dataset.index = idx;
+        // ========== WATCHERS ==========
 
-            const typeSpan = document.createElement('span');
-            typeSpan.className = 'autocomplete-type';
-            typeSpan.textContent = item.type.charAt(0).toUpperCase();
+        watch(activeFilters, filtersToHash, { deep: true });
+        watch(chartAggregations, updateCharts);
 
-            const textSpan = document.createElement('span');
-            textSpan.className = 'autocomplete-text';
-            textSpan.textContent = item.text;
+        // ========== LIFECYCLE ==========
 
-            div.appendChild(typeSpan);
-            div.appendChild(textSpan);
+        onMounted(() => {
+            initTheme();
+            hashToFilters();
 
-            div.addEventListener('click', () => {
-                // Use ID for filtering, display text for chip
-                const filterText = item.type === 'merchant' ? item.id : item.text;
-                addFilter(filterText, item.type, item.text);
-                searchInput.value = '';
-                autocompleteList.classList.remove('active');
+            // Wait for next tick to ensure refs are ready
+            nextTick(() => {
+                initCharts();
             });
 
-            autocompleteList.appendChild(div);
-        });
+            // Scroll handling
+            window.addEventListener('scroll', handleScroll);
 
-        autocompleteList.classList.add('active');
-    });
-
-    searchInput.addEventListener('keydown', (e) => {
-        const items = autocompleteList.querySelectorAll('.autocomplete-item');
-        if (!items.length) return;
-
-        if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            selectedIndex = Math.min(selectedIndex + 1, items.length - 1);
-            updateAutocompleteSelection(items);
-        } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            selectedIndex = Math.max(selectedIndex - 1, 0);
-            updateAutocompleteSelection(items);
-        } else if (e.key === 'Enter' && selectedIndex >= 0) {
-            e.preventDefault();
-            items[selectedIndex].click();
-        } else if (e.key === 'Escape') {
-            autocompleteList.classList.remove('active');
-            selectedIndex = -1;
-        }
-    });
-
-    // Close on click outside
-    document.addEventListener('click', (e) => {
-        if (!e.target.closest('.search-container')) {
-            autocompleteList.classList.remove('active');
-            selectedIndex = -1;
-        }
-    });
-}
-
-function updateAutocompleteSelection(items) {
-    items.forEach((item, idx) => {
-        item.classList.toggle('selected', idx === selectedIndex);
-    });
-}
-
-// ============================================================
-// TABLE INTERACTIONS
-// ============================================================
-
-function setupTableClickHandlers() {
-    // Click on category cell to filter
-    document.querySelectorAll('td.category').forEach(cell => {
-        cell.style.cursor = 'pointer';
-        cell.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const text = cell.textContent.trim();
-            if (text) addFilter(text, 'category');
-        });
-    });
-
-    // Click on merchant name to filter
-    document.querySelectorAll('.merchant-row').forEach(row => {
-        const merchantCell = row.cells[0];
-        if (merchantCell) {
-            merchantCell.style.cursor = 'pointer';
-            merchantCell.addEventListener('click', (e) => {
-                // Don't trigger if clicking expand arrow
-                if (e.target.classList.contains('expand-arrow')) return;
-
-                e.stopPropagation();
-                const merchantId = row.dataset.merchant;
-                const displayName = merchantCell.textContent.replace('▶', '').replace('▼', '').trim();
-                if (merchantId) addFilter(merchantId, 'merchant', displayName);
+            // Close autocomplete on outside click
+            document.addEventListener('click', e => {
+                if (!e.target.closest('.autocomplete-container')) {
+                    showAutocomplete.value = false;
+                    autocompleteIndex.value = -1;
+                }
             });
-        }
-    });
 
-    // Expand/collapse transaction rows
-    document.querySelectorAll('.merchant-row').forEach(row => {
-        row.addEventListener('click', (e) => {
-            // Toggle expanded state
-            const isExpanded = row.classList.toggle('expanded');
-            const arrow = row.querySelector('.expand-arrow');
-            if (arrow) {
-                arrow.textContent = isExpanded ? '▼' : '▶';
-            }
-
-            // Show/hide transaction rows
-            let next = row.nextElementSibling;
-            while (next && next.classList.contains('txn-row')) {
-                next.classList.toggle('hidden', !isExpanded);
-                next = next.nextElementSibling;
-            }
-        });
-    });
-}
-
-// ============================================================
-// CHART UPDATES
-// ============================================================
-
-/**
- * Update charts based on filtered state.
- * Uses aggregations from filterSectionData().
- */
-function updateChartsFromFilters(state) {
-    const agg = state.aggregations;
-
-    // 1. Update Monthly Trend Chart
-    if (window.monthlyTrendChart && window.chartData) {
-        const monthlyLabels = window.chartData.monthly.labels;
-        const monthlyData = monthlyLabels.map(label => {
-            const key = monthLabelToKey(label);
-            return agg.byMonth[key] || 0;
-        });
-        window.monthlyTrendChart.data.datasets[0].data = monthlyData;
-        window.monthlyTrendChart.update();
-    }
-
-    // 2. Update Category Pie Chart
-    if (window.categoryPieChart && window.chartData) {
-        // Map from categoryPath (e.g., "food/grocery") to main category totals
-        const categoryTotals = {};
-        for (const [catPath, amount] of Object.entries(agg.byCategory)) {
-            // Extract main category from path (e.g., "food" from "food/grocery")
-            const mainCat = catPath.split('/')[0];
-            // Capitalize first letter
-            const displayCat = mainCat.charAt(0).toUpperCase() + mainCat.slice(1);
-            categoryTotals[displayCat] = (categoryTotals[displayCat] || 0) + amount;
-        }
-
-        // Update pie chart data in the same order as original labels
-        const pieLabels = window.chartData.categoryPie.labels;
-        const pieData = pieLabels.map(label => categoryTotals[label] || 0);
-        window.categoryPieChart.data.datasets[0].data = pieData;
-        window.categoryPieChart.update();
-    }
-
-    // 3. Update Category by Month Chart
-    if (window.categoryByMonthChart && window.chartData) {
-        const datasets = window.categoryByMonthChart.data.datasets;
-        const monthLabels = window.categoryByMonthChart.data.labels;
-
-        datasets.forEach(dataset => {
-            const category = dataset.label;
-            const catData = agg.byCategoryByMonth[category] || {};
-            dataset.data = monthLabels.map(label => {
-                const key = monthLabelToKey(label);
-                return catData[key] || 0;
+            // Hash change handler
+            window.addEventListener('hashchange', () => {
+                activeFilters.value = [];
+                hashToFilters();
             });
         });
-        window.categoryByMonthChart.update();
+
+        // ========== RETURN ==========
+
+        return {
+            // State
+            activeFilters, expandedMerchants, collapsedSections, searchQuery,
+            showAutocomplete, autocompleteIndex, isScrolled, isDarkTheme, chartsCollapsed, helpCollapsed,
+            // Refs
+            monthlyChart, categoryPieChart, categoryByMonthChart,
+            // Computed
+            spendingData, title, subtitle,
+            visibleSections, sectionTotals, grandTotal, monthlyBudget, nonRecurringTotal,
+            monthlyRecurringAvg, variableMonthlyAvg, uncategorizedTotal,
+            numFilteredMonths, filteredAutocomplete, availableMonths,
+            // Methods
+            addFilter, removeFilter, toggleFilterMode, clearFilters, addMonthFilter,
+            toggleExpand, toggleSection, sortedMerchants,
+            formatCurrency, formatDate, formatMonthLabel, formatPct, filterTypeChar, getLocationClass,
+            onSearchInput, onSearchKeydown, selectAutocompleteItem,
+            toggleTheme
+        };
     }
-}
-
-
-// ============================================================
-// INITIALIZATION
-// ============================================================
-
-function initSpendingReport() {
-    setupAutocomplete();
-    setupTableClickHandlers();
-
-    // Initialize activeFilters if not already set
-    if (!window.activeFilters) {
-        window.activeFilters = [];
-    }
-
-    // Hash loading is done after charts are ready (in the HTML)
-}
-
-// Auto-initialize when DOM is ready
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initSpendingReport);
-} else {
-    initSpendingReport();
-}
+}).mount('#app');

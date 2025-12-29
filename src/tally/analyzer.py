@@ -1254,8 +1254,135 @@ def generate_embeddings(items):
     return embeddings.tolist()
 
 
+def write_summary_file_vue(stats, filepath, year=2025, home_locations=None, currency_format="${amount}", sources=None):
+    """Write summary to HTML file using Vue 3 for client-side rendering.
+
+    Args:
+        stats: Analysis statistics dict
+        filepath: Output file path
+        year: Year for display in title
+        home_locations: Set of home location codes for location badge coloring
+        currency_format: Format string for currency display, e.g. "${amount}" or "{amount} zł"
+        sources: List of data source names (e.g., ['Amex', 'Chase'])
+    """
+    home_locations = home_locations or set()
+    sources = sources or []
+
+    # Load template files
+    template_dir = Path(__file__).parent
+    html_template = (template_dir / 'spending_report.html').read_text()
+    css_content = (template_dir / 'spending_report.css').read_text()
+    js_content = (template_dir / 'spending_report.js').read_text()
+
+    # Extract merchant dicts
+    monthly_merchants = stats['monthly_merchants']
+    annual_merchants = stats['annual_merchants']
+    periodic_merchants = stats['periodic_merchants']
+    travel_merchants = stats['travel_merchants']
+    one_off_merchants = stats['one_off_merchants']
+    variable_merchants = stats['variable_merchants']
+
+    # Helper function to create merchant IDs
+    def make_merchant_id(name):
+        return name.replace("'", "").replace('"', '').replace(' ', '_')
+
+    # Build section merchants data
+    def build_section_merchants(merchant_dict):
+        merchants = {}
+        for merchant_name, data in merchant_dict.items():
+            merchant_id = make_merchant_id(merchant_name)
+
+            # Build transactions array with unique IDs
+            txns = []
+            for i, txn in enumerate(data.get('transactions', [])):
+                txns.append({
+                    'id': f"{merchant_id}_{i}",
+                    'date': txn.get('date', ''),
+                    'month': txn.get('month', ''),
+                    'description': txn.get('description', ''),
+                    'amount': txn.get('amount', 0),
+                    'source': txn.get('source', ''),
+                    'location': txn.get('location')
+                })
+
+            merchants[merchant_id] = {
+                'id': merchant_id,
+                'displayName': merchant_name,
+                'category': data.get('category', 'Other'),
+                'subcategory': data.get('subcategory', 'Uncategorized'),
+                'categoryPath': f"{data.get('category', 'Other')}/{data.get('subcategory', 'Uncategorized')}".lower(),
+                'transactions': txns
+            }
+        return merchants
+
+    # Build spending data structure for Vue
+    num_months = stats['num_months']
+
+    # Section configurations: (id, merchant_dict, title, has_monthly_column, description)
+    section_configs = [
+        ('monthly', monthly_merchants, 'Monthly Recurring', True,
+         'Expenses that occur every month (6+ months of history). Avg/Mo shows the average monthly cost.'),
+        ('annual', annual_merchants, 'Annual', False,
+         'Once-a-year expenses like subscriptions, renewals, or seasonal bills.'),
+        ('periodic', periodic_merchants, 'Periodic', False,
+         'Recurring expenses that happen quarterly or a few times a year.'),
+        ('travel', travel_merchants, 'Travel', False,
+         'Travel-related expenses including flights, hotels, and international purchases.'),
+        ('oneoff', one_off_merchants, 'One-Off', False,
+         'Single or infrequent purchases that don\'t recur regularly.'),
+        ('variable', variable_merchants, 'Variable Spending', True,
+         'Discretionary spending that varies month to month. Avg/Mo shows your typical monthly spend.'),
+    ]
+
+    sections = {}
+    for section_id, merchant_dict, title, has_monthly, description in section_configs:
+        merchants = build_section_merchants(merchant_dict)
+        if merchants:  # Only include sections with merchants
+            sections[section_id] = {
+                'title': title,
+                'hasMonthlyColumn': has_monthly,
+                'description': description,
+                'merchants': merchants
+            }
+
+    # Get home state for location coloring
+    home_state = list(home_locations)[0] if home_locations else 'WA'
+
+    # Calculate data through date (latest transaction date)
+    latest_date = ''
+    for merchant_dict in [monthly_merchants, annual_merchants, periodic_merchants,
+                          travel_merchants, one_off_merchants, variable_merchants]:
+        for data in merchant_dict.values():
+            for txn in data.get('transactions', []):
+                if txn.get('date', '') > latest_date:
+                    latest_date = txn.get('date', '')
+
+    # Build final spending data object
+    spending_data = {
+        'year': year,
+        'numMonths': num_months,
+        'homeState': home_state,
+        'sources': sources,
+        'dataThrough': latest_date,
+        'sections': sections
+    }
+
+    # Assemble final HTML
+    data_script = f'window.spendingData = {json.dumps(spending_data)};'
+    final_html = html_template.replace(
+        '/* CSS_PLACEHOLDER */', css_content
+    ).replace(
+        '/* DATA_PLACEHOLDER */', data_script
+    ).replace(
+        '/* JS_PLACEHOLDER */', js_content
+    )
+
+    # Write output file
+    Path(filepath).write_text(final_html, encoding='utf-8')
+
+
 def write_summary_file(stats, filepath, year=2025, home_locations=None, currency_format="${amount}"):
-    """Write summary to HTML file.
+    """Write summary to HTML file (legacy version with server-side rendering).
 
     Args:
         stats: Analysis statistics dict

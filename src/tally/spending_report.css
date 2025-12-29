@@ -415,6 +415,7 @@ h1 {
 .card.monthly .amount { color: var(--accent-blue); }
 .card.non-recurring .amount { color: var(--accent-pink); }
 .card.total .amount { color: var(--accent-cyan); }
+.per-month { font-size: 1rem; color: var(--text-muted); font-weight: 400; }
 .breakdown {
     margin-top: 1rem;
     padding-top: 1rem;
@@ -453,6 +454,16 @@ section {
     display: flex;
     align-items: center;
     gap: 0.75rem;
+}
+.info-icon {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    opacity: 0.6;
+    cursor: help;
+}
+.section-header:hover .info-icon {
+    opacity: 1;
+    color: var(--accent-blue);
 }
 .section-header .toggle {
     font-size: 1.5rem;
