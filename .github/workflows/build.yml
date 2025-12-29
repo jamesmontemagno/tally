@@ -61,8 +61,21 @@ jobs:
           cat src/tally/_version.py
         shell: bash
 
-      - name: Build executable
-        run: uv run pyinstaller --onefile src/tally/__main__.py --name tally
+      - name: Build executable (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          uv run pyinstaller --onefile src/tally/__main__.py --name tally \
+            --add-data "src/tally/spending_report.html:tally" \
+            --add-data "src/tally/spending_report.css:tally" \
+            --add-data "src/tally/spending_report.js:tally"
+
+      - name: Build executable (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          uv run pyinstaller --onefile src/tally/__main__.py --name tally `
+            --add-data "src/tally/spending_report.html;tally" `
+            --add-data "src/tally/spending_report.css;tally" `
+            --add-data "src/tally/spending_report.js;tally"
 
       - name: Create zip (Unix)
         if: runner.os != 'Windows'

@@ -8,9 +8,24 @@ import csv
 import json
 import os
 import re
+import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+
+
+def get_template_dir():
+    """Get the directory containing template files.
+
+    When running as a PyInstaller bundle, files are in sys._MEIPASS/tally/.
+    Otherwise, they're in the same directory as this module.
+    """
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # Running as PyInstaller bundle
+        return Path(sys._MEIPASS) / 'tally'
+    else:
+        # Running as normal Python
+        return Path(__file__).parent
 
 from .merchant_utils import normalize_merchant
 from .format_parser import FormatSpec
@@ -1267,7 +1282,7 @@ def write_summary_file_vue(stats, filepath, year=2025, home_locations=None, curr
     sources = sources or []
 
     # Load template files
-    template_dir = Path(__file__).parent
+    template_dir = get_template_dir()
     html_template = (template_dir / 'spending_report.html').read_text(encoding='utf-8')
     css_content = (template_dir / 'spending_report.css').read_text(encoding='utf-8')
     js_content = (template_dir / 'spending_report.js').read_text(encoding='utf-8')
@@ -1429,11 +1444,12 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
     home_locations = home_locations or set()
 
     # Load external CSS and JavaScript files for embedding
-    css_file_path = Path(__file__).parent / 'spending_report.css'
+    template_dir = get_template_dir()
+    css_file_path = template_dir / 'spending_report.css'
     with open(css_file_path, 'r', encoding='utf-8') as f:
         spending_report_css = f.read()
 
-    js_file_path = Path(__file__).parent / 'spending_report.js'
+    js_file_path = template_dir / 'spending_report.js'
     with open(js_file_path, 'r', encoding='utf-8') as f:
         spending_report_js = f.read()
 
