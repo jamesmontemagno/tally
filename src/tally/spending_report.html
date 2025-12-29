@@ -165,7 +165,9 @@
                         <h2>
                             <span class="toggle">{{ collapsedSections.has(sectionId) ? '▶' : '▼' }}</span>
                             {{ section.title }}
-                            <span class="info-icon" v-if="section.description">ⓘ</span>
+                            <span class="info-icon" v-if="section.description">ⓘ
+                                <span class="tooltip">{{ section.description }}</span>
+                            </span>
                         </h2>
                         <span class="section-total">
                             <template v-if="section.hasMonthlyColumn">

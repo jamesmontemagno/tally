@@ -460,10 +460,37 @@ section {
     color: var(--text-muted);
     opacity: 0.6;
     cursor: help;
+    position: relative;
 }
-.section-header:hover .info-icon {
+.info-icon:hover {
     opacity: 1;
     color: var(--accent-blue);
+}
+.info-icon .tooltip {
+    position: absolute;
+    left: 0;
+    top: 100%;
+    margin-top: 6px;
+    padding: 10px 14px;
+    background: var(--bg-tooltip);
+    color: var(--text-tooltip);
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 400;
+    line-height: 1.5;
+    width: 300px;
+    text-align: left;
+    z-index: 1000;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease;
+    pointer-events: none;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    border: 1px solid var(--border-light);
+}
+.info-icon:hover .tooltip {
+    opacity: 1;
+    visibility: visible;
 }
 .section-header .toggle {
     font-size: 1.5rem;

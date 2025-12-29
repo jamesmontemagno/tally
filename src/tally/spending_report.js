@@ -252,6 +252,21 @@ createApp({
             return items;
         });
 
+        // Reverse lookup: filterText -> displayText by type
+        const displayTextLookup = computed(() => {
+            const lookup = {};
+            for (const item of autocompleteItems.value) {
+                const key = `${item.type}:${item.filterText}`;
+                lookup[key] = item.displayText;
+            }
+            return lookup;
+        });
+
+        function getDisplayText(type, filterText) {
+            if (type === 'month') return formatMonthLabel(filterText);
+            return displayTextLookup.value[`${type}:${filterText}`] || filterText;
+        }
+
         // Filtered autocomplete based on search
         const filteredAutocomplete = computed(() => {
             const q = searchQuery.value.toLowerCase().trim();
@@ -507,7 +522,7 @@ createApp({
                 const type = typeMap[part[start]] || 'category';
                 const text = decodeURIComponent(part.slice(part.indexOf(':') + 1));
                 if (text && !activeFilters.value.some(f => f.text === text && f.type === type)) {
-                    const displayText = type === 'month' ? formatMonthLabel(text) : text;
+                    const displayText = getDisplayText(type, text);
                     activeFilters.value.push({ text, type, mode, displayText });
                 }
             });
@@ -540,8 +555,9 @@ createApp({
                         scales: {
                             y: {
                                 beginAtZero: true,
+                                grace: '5%',
                                 ticks: {
-                                    callback: v => '$' + (v/1000).toFixed(0) + 'k'
+                                    callback: v => v >= 1000 ? '$' + (v/1000).toFixed(0) + 'k' : '$' + v.toFixed(0)
                                 }
                             }
                         },
@@ -623,8 +639,9 @@ createApp({
                             y: {
                                 stacked: true,
                                 beginAtZero: true,
+                                grace: '5%',
                                 ticks: {
-                                    callback: v => '$' + (v/1000).toFixed(0) + 'k'
+                                    callback: v => v >= 1000 ? '$' + (v/1000).toFixed(0) + 'k' : '$' + v.toFixed(0)
                                 }
                             }
                         },
@@ -661,8 +678,10 @@ createApp({
             if (monthlyChartInstance) {
                 const labels = monthsToShow.map(m => m.label);
                 const data = monthsToShow.map(m => agg.byMonth[m.key] || 0);
+                const maxVal = Math.max(...data, 1); // At least 1 to avoid 0
                 monthlyChartInstance.data.labels = labels;
                 monthlyChartInstance.data.datasets[0].data = data;
+                monthlyChartInstance.options.scales.y.suggestedMax = maxVal * 1.1;
                 monthlyChartInstance.update();
             }
 
@@ -691,8 +710,15 @@ createApp({
                     backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length]
                 }));
 
+                // Calculate max for stacked bar (sum of all categories per month)
+                const monthTotals = monthsToShow.map((m, idx) =>
+                    datasets.reduce((sum, ds) => sum + (ds.data[idx] || 0), 0)
+                );
+                const maxVal = Math.max(...monthTotals, 1); // At least 1 to avoid 0
+
                 categoryMonthChartInstance.data.labels = labels;
                 categoryMonthChartInstance.data.datasets = datasets;
+                categoryMonthChartInstance.options.scales.y.suggestedMax = maxVal * 1.1;
                 categoryMonthChartInstance.update();
             }
         }
@@ -712,10 +738,10 @@ createApp({
 
         onMounted(() => {
             initTheme();
-            hashToFilters();
 
-            // Wait for next tick to ensure refs are ready
+            // Wait for next tick to ensure computed properties are ready
             nextTick(() => {
+                hashToFilters();
                 initCharts();
             });
 
