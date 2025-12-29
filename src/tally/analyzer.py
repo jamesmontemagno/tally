@@ -691,6 +691,7 @@ def analyze_transactions(transactions):
         by_merchant[txn['merchant']]['payments'].append(txn['amount'])
         by_merchant[txn['merchant']]['transactions'].append({
             'date': txn['date'].strftime('%m/%d'),
+            'month': month_key,
             'description': txn['description'],
             'amount': txn['amount'],
             'source': txn['source'],
@@ -1411,6 +1412,61 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
     sorted_months = sorted(by_month.keys())
     monthly_labels = [datetime.strptime(m, '%Y-%m').strftime('%b %Y') for m in sorted_months]
     monthly_totals = [by_month[m] for m in sorted_months]
+
+    # Calculate min/max months for date picker (e.g., "2025-01", "2025-12")
+    min_month = sorted_months[0] if sorted_months else f"{year}-01"
+    max_month = sorted_months[-1] if sorted_months else f"{year}-12"
+
+    # Generate date picker options from available months
+    month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+    def generate_date_options(months_list):
+        """Generate HTML options for months and quarters from available data."""
+        if not months_list:
+            return ""
+
+        options = []
+
+        # Get unique years from the months
+        years = sorted(set(m.split('-')[0] for m in months_list), reverse=True)
+
+        # Generate quarter options
+        quarter_options = []
+        for yr in years:
+            quarters = [
+                (f"{yr}-10..{yr}-12", f"Q4 {yr}"),
+                (f"{yr}-07..{yr}-09", f"Q3 {yr}"),
+                (f"{yr}-04..{yr}-06", f"Q2 {yr}"),
+                (f"{yr}-01..{yr}-03", f"Q1 {yr}"),
+            ]
+            for value, label in quarters:
+                # Check if any months in this quarter exist in data
+                start, end = value.split('..')
+                quarter_months = [m for m in months_list if start <= m <= end]
+                if quarter_months:
+                    quarter_options.append(f'                    <option value="{value}">{label}</option>')
+
+        if quarter_options:
+            options.append('                <optgroup label="Quarters">')
+            options.extend(quarter_options)
+            options.append('                </optgroup>')
+
+        # Generate individual month options
+        month_options = []
+        for m in reversed(months_list):
+            yr, mo = m.split('-')
+            month_label = f"{month_names[int(mo)-1]} {yr}"
+            month_options.append(f'                    <option value="{m}">{month_label}</option>')
+
+        if month_options:
+            options.append('                <optgroup label="Months">')
+            options.extend(month_options)
+            options.append('                </optgroup>')
+
+        return '\n'.join(options)
+
+    date_picker_options = generate_date_options(sorted_months)
     
     # 2. Category breakdown by month - build spending per category per month
     # Build category breakdown from merchant data using monthly_amounts dict
@@ -1731,6 +1787,46 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         .search-box input::placeholder {{
             color: var(--text-muted);
         }}
+        .date-range-select {{
+            padding: 0.6rem 2rem 0.6rem 1rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-medium);
+            background: var(--bg-input);
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            font-weight: 500;
+            outline: none;
+            cursor: pointer;
+            margin-left: 0.75rem;
+            transition: all 0.2s;
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 0.7rem center;
+            min-width: 120px;
+        }}
+        .date-range-select:hover {{
+            border-color: var(--accent-blue);
+            background-color: var(--bg-input-focus);
+        }}
+        .date-range-select:focus {{
+            border-color: var(--accent-blue);
+            background-color: var(--bg-input-focus);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+        }}
+        .date-range-select option {{
+            background: var(--bg-card);
+            color: var(--text-primary);
+            padding: 0.5rem;
+        }}
+        .date-range-select optgroup {{
+            background: var(--bg-card);
+            color: var(--text-muted);
+            font-weight: 600;
+            font-style: normal;
+        }}
         .autocomplete-container {{
             position: relative;
             display: inline-block;
@@ -1841,7 +1937,9 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         .filter-chip.merchant.include {{ background: rgba(77, 255, 210, 0.2); color: var(--accent-cyan); }}
         .filter-chip.location {{ border-color: var(--accent-orange); }}
         .filter-chip.location.include {{ background: rgba(255, 169, 77, 0.2); color: var(--accent-orange); }}
-        .filter-chip.category.exclude, .filter-chip.merchant.exclude, .filter-chip.location.exclude {{
+        .filter-chip.month {{ border-color: var(--accent-purple); }}
+        .filter-chip.month.include {{ background: rgba(139, 92, 246, 0.2); color: var(--accent-purple); }}
+        .filter-chip.category.exclude, .filter-chip.merchant.exclude, .filter-chip.location.exclude, .filter-chip.month.exclude {{
             background: rgba(255, 107, 107, 0.15);
             border-color: var(--accent-red);
             color: var(--accent-red);
@@ -2171,11 +2269,27 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             padding: 1.5rem;
             margin-bottom: 2rem;
         }}
-        .chart-section h2 {{
+        .chart-section .section-header {{
+            cursor: pointer;
+            margin: -1.5rem -1.5rem 1.5rem -1.5rem;
+            padding: 1rem 1.5rem;
+            border-radius: 16px 16px 0 0;
+        }}
+        .chart-section .section-header:hover {{
+            background: var(--bg-row-hover);
+        }}
+        .chart-section .section-header h2 {{
             font-size: 1.25rem;
             font-weight: 500;
-            margin-bottom: 1.5rem;
+            margin: 0;
             color: var(--text-primary);
+        }}
+        .chart-section .section-header .toggle {{
+            display: inline-block;
+            transition: transform 0.2s;
+        }}
+        .chart-section .section-header.collapsed .toggle {{
+            transform: rotate(-90deg);
         }}
         .charts-grid {{
             display: grid;
@@ -2360,6 +2474,10 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 <input type="text" id="searchInput" placeholder="Search merchants, categories, locations..." autocomplete="off">
                 <div id="autocompleteList" class="autocomplete-list"></div>
             </div>
+            <select id="dateRangeSelect" class="date-range-select" onchange="applyDateRange(this.value)">
+                <option value="">All Dates</option>
+{date_picker_options}
+            </select>
             <div id="filterChips" class="filter-chips"></div>
         </div>
 
@@ -2377,6 +2495,8 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 <span class="value"><code>YTD</code> year-to-date total · <code>/mo</code> monthly cost · <code>Months</code> months with transactions</span>
                 <span class="label">Categories:</span>
                 <span class="value"><strong>Monthly Recurring</strong> (6+ months) · <strong>Annual</strong> (once-a-year) · <strong>Periodic</strong> (quarterly) · <strong>Travel</strong> · <strong>One-Off</strong> · <strong>Variable</strong> (discretionary)</span>
+                <span class="label">Charts:</span>
+                <span class="value"><strong>Monthly Trend</strong> total spending per month · <strong>Category Breakdown</strong> top 8 categories by total spend · <strong>Spending by Month</strong> category breakdown over time. Charts update when filters are applied.</span>
             </div>
         </div>
 
@@ -2420,7 +2540,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             </div>
 
             <div class="card total">
-                <h2>Total Spending (YTD)</h2>
+                <h2 id="totalSpendingLabel">Total Spending (YTD)</h2>
                 <div class="amount" id="totalSpending" data-original="{actual:.0f}">{fmt(actual)}</div>
                 <div class="breakdown">
                     <div class="breakdown-item">
@@ -2432,8 +2552,11 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         </div>
 
         <!-- Charts Section -->
-        <div class="chart-section">
-            <h2>Spending Charts & Trends</h2>
+        <section class="chart-section">
+            <div class="section-header" onclick="toggleSection(this)" data-tooltip="Monthly Trend shows spending per month. Category Breakdown shows top 8 categories by total. Charts update when filters are applied.">
+                <h2><span class="toggle">▼</span> Spending Charts & Trends</h2>
+            </div>
+            <div class="section-content">
             <div class="charts-grid">
                 <div class="chart-container">
                     <h3>Monthly Spending Trend</h3>
@@ -2454,7 +2577,8 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                     <canvas id="categoryByMonthChart"></canvas>
                 </div>
             </div>
-        </div>
+            </div>
+        </section>
 
         <section class="monthly-section">
             <div class="section-header" onclick="toggleSection(this)">
@@ -2506,7 +2630,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         sorted_txns = sorted(data.get('transactions', []), key=lambda x: x['date'], reverse=True)
         for txn in sorted_txns:
             html += f'''
-                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['date'][:7]}" data-category="{data.get('category', 'Unknown')}">
+                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['month']}" data-category="{data.get('category', 'Unknown')}">
                         <td colspan="7"><div class="txn-detail"><span class="txn-date">{txn['date']}</span><span class="txn-desc">{txn['description']}</span><span class="txn-amount">{fmt_dec(txn['amount'])}</span><span class="txn-source {txn['source'].lower()}">{txn['source']}</span>{location_badge(txn.get('location'))}</div></td>
                     </tr>'''
 
@@ -2564,7 +2688,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         sorted_txns = sorted(data.get('transactions', []), key=lambda x: x['date'], reverse=True)
         for txn in sorted_txns:
             html += f'''
-                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['date'][:7]}" data-category="{data.get('category', 'Unknown')}">
+                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['month']}" data-category="{data.get('category', 'Unknown')}">
                         <td colspan="5"><div class="txn-detail"><span class="txn-date">{txn['date']}</span><span class="txn-desc">{txn['description']}</span><span class="txn-amount">{fmt_dec(txn['amount'])}</span><span class="txn-source {txn['source'].lower()}">{txn['source']}</span>{location_badge(txn.get('location'))}</div></td>
                     </tr>'''
 
@@ -2620,7 +2744,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         sorted_txns = sorted(data.get('transactions', []), key=lambda x: x['date'], reverse=True)
         for txn in sorted_txns:
             html += f'''
-                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['date'][:7]}" data-category="{data.get('category', 'Unknown')}">
+                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['month']}" data-category="{data.get('category', 'Unknown')}">
                         <td colspan="5"><div class="txn-detail"><span class="txn-date">{txn['date']}</span><span class="txn-desc">{txn['description']}</span><span class="txn-amount">{fmt_dec(txn['amount'])}</span><span class="txn-source {txn['source'].lower()}">{txn['source']}</span>{location_badge(txn.get('location'))}</div></td>
                     </tr>'''
 
@@ -2677,7 +2801,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         sorted_txns = sorted(data.get('transactions', []), key=lambda x: x['date'], reverse=True)
         for txn in sorted_txns:
             html += f'''
-                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['date'][:7]}" data-category="{data.get('category', 'Unknown')}">
+                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['month']}" data-category="{data.get('category', 'Unknown')}">
                         <td colspan="5"><div class="txn-detail"><span class="txn-date">{txn['date']}</span><span class="txn-desc">{txn['description']}</span><span class="txn-amount">{fmt_dec(txn['amount'])}</span><span class="txn-source {txn['source'].lower()}">{txn['source']}</span>{location_badge(txn.get('location'))}</div></td>
                     </tr>'''
 
@@ -2733,7 +2857,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         sorted_txns = sorted(data.get('transactions', []), key=lambda x: x['date'], reverse=True)
         for txn in sorted_txns:
             html += f'''
-                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['date'][:7]}" data-category="{data.get('category', 'Unknown')}">
+                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['month']}" data-category="{data.get('category', 'Unknown')}">
                         <td colspan="5"><div class="txn-detail"><span class="txn-date">{txn['date']}</span><span class="txn-desc">{txn['description']}</span><span class="txn-amount">{fmt_dec(txn['amount'])}</span><span class="txn-source {txn['source'].lower()}">{txn['source']}</span>{location_badge(txn.get('location'))}</div></td>
                     </tr>'''
 
@@ -2795,7 +2919,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         sorted_txns = sorted(data.get('transactions', []), key=lambda x: x['date'], reverse=True)
         for txn in sorted_txns:
             html += f'''
-                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['date'][:7]}" data-category="{data.get('category', 'Unknown')}">
+                    <tr class="txn-row hidden" data-merchant="{merchant_id}" data-amount="{txn['amount']:.2f}" data-month="{txn['month']}" data-category="{data.get('category', 'Unknown')}">
                         <td colspan="7"><div class="txn-detail"><span class="txn-date">{txn['date']}</span><span class="txn-desc">{txn['description']}</span><span class="txn-amount">{fmt_dec(txn['amount'])}</span><span class="txn-source {txn['source'].lower()}">{txn['source']}</span>{location_badge(txn.get('location'))}</div></td>
                     </tr>'''
 
@@ -2854,8 +2978,47 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         // Autocomplete state
         let selectedIndex = -1;
 
-        // Active filters state
-        let activeFilters = [];  // array of filter objects with text, type, mode
+        // Active filters state (window. for cross-script access)
+        window.activeFilters = [];  // array of filter objects with text, type, mode
+
+        // Month filter helpers
+        const monthNames = {{Jan:'01', Feb:'02', Mar:'03', Apr:'04', May:'05', Jun:'06',
+                            Jul:'07', Aug:'08', Sep:'09', Oct:'10', Nov:'11', Dec:'12'}};
+        const monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+        function monthLabelToKey(label) {{
+            // "Dec 2025" -> "2025-12"
+            const [mon, year] = label.split(' ');
+            return `${{year}}-${{monthNames[mon]}}`;
+        }}
+
+        function monthKeyToLabel(key) {{
+            // "2025-12" -> "Dec 2025"
+            // "2025-01..2025-03" -> "Jan–Mar 2025"
+            if (key.includes('..')) {{
+                const [start, end] = key.split('..');
+                const [sy, sm] = start.split('-');
+                const [ey, em] = end.split('-');
+                const startMon = monthLabels[parseInt(sm) - 1];
+                const endMon = monthLabels[parseInt(em) - 1];
+                if (sy === ey) {{
+                    return `${{startMon}}–${{endMon}} ${{sy}}`;
+                }}
+                return `${{startMon}} ${{sy}}–${{endMon}} ${{ey}}`;
+            }}
+            const [year, month] = key.split('-');
+            return `${{monthLabels[parseInt(month) - 1]}} ${{year}}`;
+        }}
+
+        function monthMatchesFilter(txnMonth, filterText) {{
+            if (filterText.includes('..')) {{
+                // Range: "2025-01..2025-03"
+                const [start, end] = filterText.split('..');
+                return txnMonth >= start && txnMonth <= end;
+            }}
+            // Single month: "2025-12"
+            return txnMonth === filterText;
+        }}
 
         function addFilter(text, type) {{
             // Don't add duplicate filters
@@ -2877,15 +3040,43 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             applyFilters();
         }}
 
+        function applyDateRange(value) {{
+            const select = document.getElementById('dateRangeSelect');
+            if (value) {{
+                // Check if this month/range is already in filters
+                const exists = activeFilters.some(f => f.type === 'month' && f.text === value);
+                if (!exists) {{
+                    addFilter(value, 'month');
+                }}
+            }}
+            // Reset dropdown to "All Dates" after selection (acts as "add filter" button)
+            if (select) {{
+                select.value = '';
+            }}
+        }}
+
+        function syncDatePickerWithFilters() {{
+            // Reset dropdown when filters change (multi-select via chips)
+            const select = document.getElementById('dateRangeSelect');
+            if (select) {{
+                select.value = '';
+            }}
+        }}
+
         function renderFilters() {{
             const container = document.getElementById('filterChips');
-            let html = activeFilters.map((f, i) => `
+            let html = activeFilters.map((f, i) => {{
+                // Display month filters with readable format
+                const displayText = f.type === 'month' ? monthKeyToLabel(f.text) : f.text;
+                const typeChar = f.type === 'month' ? 'd' : f.type.charAt(0);
+                return `
                 <div class="filter-chip ${{f.type}} ${{f.mode}}" data-index="${{i}}">
-                    <span class="chip-type">${{f.type.charAt(0)}}</span>
-                    <span class="chip-text">${{f.text}}</span>
+                    <span class="chip-type">${{typeChar}}</span>
+                    <span class="chip-text">${{displayText}}</span>
                     <span class="chip-remove" data-action="remove">×</span>
                 </div>
-            `).join('');
+            `;
+            }}).join('');
 
             // Add "Clear all" button if there are multiple filters
             if (activeFilters.length > 1) {{
@@ -2905,6 +3096,9 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                     }}
                 }});
             }});
+
+            // Sync date picker with current filters
+            syncDatePickerWithFilters();
         }}
 
         function clearAllFilters() {{
@@ -3012,46 +3206,73 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 }}
             }}
 
-            // Check if we have location filters (requires transaction-level filtering)
+            // Check if we have location or month filters (requires transaction-level filtering)
             const hasLocationFilter = activeFilters.some(f => f.type === 'location');
+            const hasMonthFilter = activeFilters.some(f => f.type === 'month');
+            const needsTxnFiltering = hasLocationFilter || hasMonthFilter;
 
             tables.forEach(table => {{
                 const merchantRows = table.querySelectorAll('tbody tr.merchant-row');
                 const txnRows = Array.from(table.querySelectorAll('tbody tr.txn-row'));
                 let hasVisibleRows = false;
 
-                if (hasLocationFilter) {{
-                    // Location filter: filter at transaction level
+                if (needsTxnFiltering) {{
+                    // Location/month filter: filter at transaction level
                     const visibleMerchants = new Set();
 
                     // First, determine which txn-rows match
                     txnRows.forEach(txn => {{
                         const locBadge = txn.querySelector('.txn-location');
                         const txnLoc = locBadge ? locBadge.textContent.toLowerCase() : '';
+                        const txnMonth = txn.dataset.month || '';
 
                         let matchesInclude = includeFilters.length === 0;
                         let matchesExclude = false;
 
-                        for (const f of includeFilters) {{
-                            if (f.type === 'location' && txnLoc === f.text.toLowerCase()) {{
-                                matchesInclude = true;
-                                break;
-                            }} else if (f.type !== 'location') {{
-                                // Non-location filters check against merchant
-                                const merchantId = txn.dataset.merchant;
-                                const merchantRow = table.querySelector(`tr.merchant-row[data-merchant="${{merchantId}}"]`);
-                                if (merchantRow && merchantMatchesFilter(merchantRow, f, txnRows)) {{
-                                    matchesInclude = true;
+                        // For include filters, we need to match ALL filter types that are present
+                        // E.g., if we have both category and month filters, txn must match BOTH
+                        const includeByType = {{}};
+                        includeFilters.forEach(f => {{
+                            if (!includeByType[f.type]) includeByType[f.type] = [];
+                            includeByType[f.type].push(f);
+                        }});
+
+                        // Check each filter type - must match at least one filter of each type
+                        let allTypesMatch = true;
+                        for (const [filterType, filters] of Object.entries(includeByType)) {{
+                            let typeMatches = false;
+                            for (const f of filters) {{
+                                if (f.type === 'location' && txnLoc === f.text.toLowerCase()) {{
+                                    typeMatches = true;
                                     break;
+                                }} else if (f.type === 'month' && monthMatchesFilter(txnMonth, f.text)) {{
+                                    typeMatches = true;
+                                    break;
+                                }} else if (f.type !== 'location' && f.type !== 'month') {{
+                                    // Non-txn-level filters check against merchant
+                                    const merchantId = txn.dataset.merchant;
+                                    const merchantRow = table.querySelector(`tr.merchant-row[data-merchant="${{merchantId}}"]`);
+                                    if (merchantRow && merchantMatchesFilter(merchantRow, f, txnRows)) {{
+                                        typeMatches = true;
+                                        break;
+                                    }}
                                 }}
                             }}
+                            if (!typeMatches) {{
+                                allTypesMatch = false;
+                                break;
+                            }}
                         }}
+                        matchesInclude = allTypesMatch;
 
                         for (const f of excludeFilters) {{
                             if (f.type === 'location' && txnLoc === f.text.toLowerCase()) {{
                                 matchesExclude = true;
                                 break;
-                            }} else if (f.type !== 'location') {{
+                            }} else if (f.type === 'month' && monthMatchesFilter(txnMonth, f.text)) {{
+                                matchesExclude = true;
+                                break;
+                            }} else if (f.type !== 'location' && f.type !== 'month') {{
                                 const merchantId = txn.dataset.merchant;
                                 const merchantRow = table.querySelector(`tr.merchant-row[data-merchant="${{merchantId}}"]`);
                                 if (merchantRow && merchantMatchesFilter(merchantRow, f, txnRows)) {{
@@ -3122,8 +3343,8 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 }}
             }});
 
-            // Update totals - use transaction amounts if location filter active
-            if (hasLocationFilter) {{
+            // Update totals - use transaction amounts if location or month filter active
+            if (hasLocationFilter || hasMonthFilter) {{
                 updateTotalsFromTransactions();
             }} else {{
                 updateAllTotals();
@@ -3333,32 +3554,69 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             const table = document.getElementById(tableId);
             if (!table) return {{ monthly: 0, ytd: 0 }};
 
-            const rows = table.querySelectorAll('tbody tr.merchant-row');
+            const merchantRows = table.querySelectorAll('tbody tr.merchant-row');
             const totalRow = table.querySelector('.total-row');
             let monthlySum = 0;
             let ytdSum = 0;
 
-            // First pass: calculate totals from visible rows using data-ytd attribute for precision
-            rows.forEach(row => {{
-                if (!row.classList.contains('hidden')) {{
-                    // Use data-ytd attribute for precise calculations
-                    const ytdValue = parseFloat(row.dataset.ytd) || 0;
-                    ytdSum += ytdValue;
-                    if (monthlyColIndex !== null) {{
-                        monthlySum += parseMoney(row.cells[monthlyColIndex].textContent);
-                    }}
-                }}
-            }});
+            // Check if month filters are active - if so, calculate from visible transactions
+            const hasMonthFilter = window.activeFilters && window.activeFilters.some(f => f.type === 'month');
 
-            // Second pass: update percentages for visible rows
-            if (pctColIndex !== null && ytdSum > 0) {{
-                rows.forEach(row => {{
-                    if (!row.classList.contains('hidden') && row.cells[pctColIndex]) {{
-                        const rowYtd = parseFloat(row.dataset.ytd) || 0;
-                        const pct = (rowYtd / ytdSum * 100).toFixed(1);
-                        row.cells[pctColIndex].textContent = pct + '%';
+            if (hasMonthFilter) {{
+                // Calculate from visible transaction rows for accurate month filtering
+                const merchantTotals = {{}};
+                table.querySelectorAll('tbody tr.txn-row').forEach(txn => {{
+                    if (getComputedStyle(txn).display !== 'none') {{
+                        const merchantId = txn.dataset.merchant;
+                        const amount = parseFloat(txn.dataset.amount) || 0;
+                        merchantTotals[merchantId] = (merchantTotals[merchantId] || 0) + amount;
+                        ytdSum += amount;
                     }}
                 }});
+
+                // Update percentages for visible merchant rows
+                if (pctColIndex !== null && ytdSum > 0) {{
+                    merchantRows.forEach(row => {{
+                        if (!row.classList.contains('hidden') && row.cells[pctColIndex]) {{
+                            const merchantId = row.dataset.merchant;
+                            const rowYtd = merchantTotals[merchantId] || 0;
+                            const pct = (rowYtd / ytdSum * 100).toFixed(1);
+                            row.cells[pctColIndex].textContent = pct + '%';
+                        }}
+                    }});
+                }}
+
+                // Count visible months for monthly average
+                const visibleMonths = new Set();
+                table.querySelectorAll('tbody tr.txn-row').forEach(txn => {{
+                    if (getComputedStyle(txn).display !== 'none') {{
+                        visibleMonths.add(txn.dataset.month);
+                    }}
+                }});
+                const numMonths = visibleMonths.size || 1;
+                monthlySum = ytdSum / numMonths;
+            }} else {{
+                // No month filter - use original data-ytd for faster calculation
+                merchantRows.forEach(row => {{
+                    if (!row.classList.contains('hidden')) {{
+                        const ytdValue = parseFloat(row.dataset.ytd) || 0;
+                        ytdSum += ytdValue;
+                        if (monthlyColIndex !== null) {{
+                            monthlySum += parseMoney(row.cells[monthlyColIndex].textContent);
+                        }}
+                    }}
+                }});
+
+                // Update percentages for visible rows
+                if (pctColIndex !== null && ytdSum > 0) {{
+                    merchantRows.forEach(row => {{
+                        if (!row.classList.contains('hidden') && row.cells[pctColIndex]) {{
+                            const rowYtd = parseFloat(row.dataset.ytd) || 0;
+                            const pct = (rowYtd / ytdSum * 100).toFixed(1);
+                            row.cells[pctColIndex].textContent = pct + '%';
+                        }}
+                    }});
+                }}
             }}
 
             // Update total row
@@ -3413,13 +3671,12 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         }}
 
         // Update summary cards
-        function updateSummaryCards(monthlyTotal, variableTotal, annualTotal, periodicTotal, travelTotal, oneoffTotal) {{
-            const trueMonthly = monthlyTotal + variableTotal;
+        // Now accepts both monthly averages and YTD totals for accurate filtering
+        function updateSummaryCards(monthlyAvg, variableAvg, monthlyYtd, variableYtd, annualTotal, periodicTotal, travelTotal, oneoffTotal) {{
+            const trueMonthly = monthlyAvg + variableAvg;
             const nonRecurring = annualTotal + periodicTotal + travelTotal + oneoffTotal;
 
-            // Calculate filtered total for percentages (convert monthly to YTD)
-            const monthlyYtd = monthlyTotal * 12;
-            const variableYtd = variableTotal * 12;
+            // Calculate filtered total using actual YTD values (not projected)
             const filteredTotal = monthlyYtd + variableYtd + annualTotal + periodicTotal + travelTotal + oneoffTotal;
 
             // Helper to format percentage
@@ -3430,8 +3687,8 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             if (monthlyCard) {{
                 monthlyCard.querySelector('.amount').innerHTML = formatMoney(trueMonthly) + '<span style="font-size: 1rem; color: #888;">/mo</span>';
                 const breakdownItems = monthlyCard.querySelectorAll('.breakdown-item .value');
-                if (breakdownItems[0]) breakdownItems[0].innerHTML = formatMoney(monthlyTotal) + ' <span class="breakdown-pct">(' + formatPct(monthlyYtd) + ')</span>';
-                if (breakdownItems[1]) breakdownItems[1].innerHTML = formatMoney(variableTotal) + ' <span class="breakdown-pct">(' + formatPct(variableYtd) + ')</span>';
+                if (breakdownItems[0]) breakdownItems[0].innerHTML = formatMoney(monthlyAvg) + ' <span class="breakdown-pct">(' + formatPct(monthlyYtd) + ')</span>';
+                if (breakdownItems[1]) breakdownItems[1].innerHTML = formatMoney(variableAvg) + ' <span class="breakdown-pct">(' + formatPct(variableYtd) + ')</span>';
             }}
 
             // Update Non-Recurring card
@@ -3549,8 +3806,8 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         }}
 
         function updateTotalsFromTransactions() {{
-            // Calculate totals from visible transaction rows (for location filtering)
-            // Sum amounts per section based on visible txn-rows
+            // Calculate totals from visible transaction rows (for month/location filtering)
+            // Sum amounts per merchant and per section based on visible txn-rows
             const sectionTotals = {{
                 'monthly-table': 0,
                 'annual-table': 0,
@@ -3560,48 +3817,156 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 'variable-table': 0
             }};
 
+            // Track amounts, months, and counts per merchant
+            const merchantTotals = {{}};
+            const merchantMonths = {{}};
+            const merchantCounts = {{}};
+
             document.querySelectorAll('tr.txn-row:not(.hidden)').forEach(txn => {{
-                // Use data-amount attribute for precise calculations
                 const amount = parseFloat(txn.dataset.amount) || 0;
+                const merchantId = txn.dataset.merchant;
+                const month = txn.dataset.month;
                 const tableId = txn.closest('table')?.id;
+
                 if (tableId && sectionTotals.hasOwnProperty(tableId)) {{
                     sectionTotals[tableId] += amount;
+                }}
+
+                // Track per-merchant totals, months, and counts
+                if (merchantId) {{
+                    if (!merchantTotals[merchantId]) {{
+                        merchantTotals[merchantId] = 0;
+                        merchantMonths[merchantId] = new Set();
+                        merchantCounts[merchantId] = 0;
+                    }}
+                    merchantTotals[merchantId] += amount;
+                    merchantCounts[merchantId]++;
+                    if (month) merchantMonths[merchantId].add(month);
+                }}
+            }});
+
+            // Calculate number of months in the filter for monthly average
+            const monthFilters = activeFilters.filter(f => f.type === 'month');
+            let numFilteredMonths = 1;
+            if (monthFilters.length > 0) {{
+                // Count unique months across all month filters
+                const allMonths = new Set();
+                monthFilters.forEach(f => {{
+                    if (f.text.includes('..')) {{
+                        // Range filter - count months in range
+                        const [start, end] = f.text.split('..');
+                        const startDate = new Date(start + '-01');
+                        const endDate = new Date(end + '-01');
+                        let current = new Date(startDate);
+                        while (current <= endDate) {{
+                            allMonths.add(current.toISOString().slice(0, 7));
+                            current.setMonth(current.getMonth() + 1);
+                        }}
+                    }} else {{
+                        allMonths.add(f.text);
+                    }}
+                }});
+                numFilteredMonths = allMonths.size || 1;
+            }} else {{
+                numFilteredMonths = 12; // Full year
+            }}
+
+            // Update each merchant row with filtered amounts, months, and counts
+            document.querySelectorAll('.merchant-row').forEach(row => {{
+                const merchantId = row.dataset.merchant;
+                const tableId = row.closest('table')?.id;
+                const filteredTotal = merchantTotals[merchantId] || 0;
+                const filteredMonthCount = merchantMonths[merchantId]?.size || 0;
+                const filteredTxnCount = merchantCounts[merchantId] || 0;
+
+                if (filteredTotal > 0) {{
+                    // Update columns based on table type
+                    // For monthly/variable tables: col 1=Months, col 2=Count, col 4=Monthly, col 5=YTD, col 6=%
+                    // For annual/periodic/oneoff: col 2=Count, col 3=Total, col 4=%
+                    // For travel: col 2=Total, col 3=%
+                    if (tableId === 'monthly-table' || tableId === 'variable-table') {{
+                        const monthsCell = row.cells[1];
+                        const countCell = row.cells[2];
+                        const monthlyCell = row.cells[4];
+                        const ytdCell = row.cells[5];
+                        const pctCell = row.cells[6];
+                        if (monthsCell) monthsCell.textContent = filteredMonthCount;
+                        if (countCell) countCell.textContent = filteredTxnCount;
+                        if (ytdCell) ytdCell.innerHTML = '<span class="money">' + formatMoney(filteredTotal) + '</span>';
+                        if (monthlyCell) {{
+                            const monthlyAvg = filteredTotal / numFilteredMonths;
+                            monthlyCell.innerHTML = '<span class="money">' + formatMoney(monthlyAvg, true) + '</span>';
+                        }}
+                        if (pctCell && sectionTotals[tableId] > 0) {{
+                            pctCell.textContent = (filteredTotal / sectionTotals[tableId] * 100).toFixed(1) + '%';
+                        }}
+                    }} else if (tableId === 'travel-table') {{
+                        const totalCell = row.cells[2];
+                        const pctCell = row.cells[3];
+                        if (totalCell) totalCell.innerHTML = '<span class="money">' + formatMoney(filteredTotal) + '</span>';
+                        if (pctCell && sectionTotals[tableId] > 0) {{
+                            pctCell.textContent = (filteredTotal / sectionTotals[tableId] * 100).toFixed(1) + '%';
+                        }}
+                    }} else {{
+                        // annual, periodic, oneoff tables
+                        const countCell = row.cells[2];
+                        const totalCell = row.cells[3];
+                        const pctCell = row.cells[4];
+                        if (countCell) countCell.textContent = filteredTxnCount;
+                        if (totalCell) totalCell.innerHTML = '<span class="money">' + formatMoney(filteredTotal) + '</span>';
+                        if (pctCell && sectionTotals[tableId] > 0) {{
+                            pctCell.textContent = (filteredTotal / sectionTotals[tableId] * 100).toFixed(1) + '%';
+                        }}
+                    }}
                 }}
             }});
 
             const totalAmount = Object.values(sectionTotals).reduce((a, b) => a + b, 0);
 
-            // Update section headers (pass totalAmount for percentage calculation)
-            updateSectionTotal('monthly-section', sectionTotals['monthly-table'] / 12, true, sectionTotals['monthly-table'], totalAmount);
+            // Update section headers - use filtered month count for monthly calculations
+            const monthlyAvg = sectionTotals['monthly-table'] / numFilteredMonths;
+            const variableAvg = sectionTotals['variable-table'] / numFilteredMonths;
+
+            updateSectionTotal('monthly-section', monthlyAvg, true, sectionTotals['monthly-table'], totalAmount);
             updateSectionTotal('annual-section', sectionTotals['annual-table'], false, null, totalAmount);
             updateSectionTotal('periodic-section', sectionTotals['periodic-table'], false, null, totalAmount);
             updateSectionTotal('travel-section', sectionTotals['travel-table'], false, null, totalAmount);
             updateSectionTotal('oneoff-section', sectionTotals['oneoff-table'], false, null, totalAmount);
-            updateSectionTotal('variable-section', sectionTotals['variable-table'] / 12, true, sectionTotals['variable-table'], totalAmount);
+            updateSectionTotal('variable-section', variableAvg, true, sectionTotals['variable-table'], totalAmount);
 
             // Update summary cards
             updateSummaryCards(
-                sectionTotals['monthly-table'] / 12,
-                sectionTotals['variable-table'] / 12,
-                sectionTotals['annual-table'],
-                sectionTotals['periodic-table'],
-                sectionTotals['travel-table'],
-                sectionTotals['oneoff-table']
+                monthlyAvg,
+                variableAvg,
+                sectionTotals['monthly-table'],  // monthlyYtd
+                sectionTotals['variable-table'], // variableYtd
+                sectionTotals['annual-table'],   // annualTotal
+                sectionTotals['periodic-table'], // periodicTotal
+                sectionTotals['travel-table'],   // travelTotal
+                sectionTotals['oneoff-table']    // oneoffTotal
             );
 
             // Update table total rows
-            updateTableTotalRow('monthly-table', 4, sectionTotals['monthly-table'] / 12, 5, sectionTotals['monthly-table']);
+            updateTableTotalRow('monthly-table', 4, monthlyAvg, 5, sectionTotals['monthly-table']);
             updateTableTotalRow('annual-table', null, null, 3, sectionTotals['annual-table']);
             updateTableTotalRow('periodic-table', null, null, 3, sectionTotals['periodic-table']);
             updateTableTotalRow('travel-table', null, null, 2, sectionTotals['travel-table']);
             updateTableTotalRow('oneoff-table', null, null, 3, sectionTotals['oneoff-table']);
-            updateTableTotalRow('variable-table', 4, sectionTotals['variable-table'] / 12, 5, sectionTotals['variable-table']);
+            updateTableTotalRow('variable-table', 4, variableAvg, 5, sectionTotals['variable-table']);
 
-            // Update Total Spending card with percentage
+            // Update Total Spending card
             const totalEl = document.getElementById('totalSpending');
-            const pct = (totalAmount / originalTotals.totalYtd * 100).toFixed(1);
-            totalEl.innerHTML = formatCurrency(totalAmount) +
-                '<span class="filter-pct"> (' + pct + '%)</span>';
+            const hasOtherIncludeFilters = activeFilters.some(f => f.type !== 'month' && f.mode === 'include');
+
+            if (monthFilters.length > 0 && !hasOtherIncludeFilters) {{
+                totalEl.innerHTML = formatCurrency(totalAmount);
+            }} else if (activeFilters.some(f => f.mode === 'include')) {{
+                const pct = (totalAmount / originalTotals.totalYtd * 100).toFixed(1);
+                totalEl.innerHTML = formatCurrency(totalAmount) +
+                    '<span class="filter-pct"> (' + pct + '%)</span>';
+            }} else {{
+                totalEl.innerHTML = formatCurrency(totalAmount);
+            }}
         }}
 
         function updateTableTotalRow(tableId, monthlyColIndex, monthlyValue, ytdColIndex, ytdValue) {{
@@ -3639,10 +4004,12 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             updateSectionTotal('oneoff-section', oneoffTotals.ytd, false, null, totalYtd);
             updateSectionTotal('variable-section', variableTotals.monthly, true, variableTotals.ytd, totalYtd);
 
-            // Update summary cards
+            // Update summary cards (pass both monthly avg and YTD totals)
             updateSummaryCards(
                 monthlyTotals.monthly,
                 variableTotals.monthly,
+                monthlyTotals.ytd,
+                variableTotals.ytd,
                 annualTotals.ytd,
                 periodicTotals.ytd,
                 travelTotals.ytd,
@@ -3651,9 +4018,38 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
 
             // Update Total Spending card with filtered total and percentage
             const totalEl = document.getElementById('totalSpending');
-            const pct = (totalYtd / originalTotals.totalYtd * 100).toFixed(1);
-            totalEl.innerHTML = formatCurrency(totalYtd) +
-                '<span class="filter-pct"> (' + pct + '%)</span>';
+            const labelEl = document.getElementById('totalSpendingLabel');
+            const monthFilters = activeFilters.filter(f => f.type === 'month');
+            const hasOtherIncludeFilters = activeFilters.some(f => f.type !== 'month' && f.mode === 'include');
+
+            // Calculate percentage - but only show when it's meaningful
+            // When filtering by month only, the total IS the complete period total, no percentage needed
+            // When filtering by category/merchant (with or without month), show % of filtered total
+            if (monthFilters.length > 0 && !hasOtherIncludeFilters) {{
+                // Month-only filter: don't show percentage (it's the complete total for that period)
+                totalEl.innerHTML = formatCurrency(totalYtd);
+            }} else if (activeFilters.some(f => f.mode === 'include')) {{
+                // Have include filters (category/merchant): show percentage of appropriate base
+                const baseTotal = monthFilters.length > 0 ? totalYtd : originalTotals.totalYtd;
+                // When month filtered, compare to original month totals; when not, compare to YTD
+                const pct = (totalYtd / originalTotals.totalYtd * 100).toFixed(1);
+                totalEl.innerHTML = formatCurrency(totalYtd) +
+                    '<span class="filter-pct"> (' + pct + '%)</span>';
+            }} else {{
+                // No active include filters
+                totalEl.innerHTML = formatCurrency(totalYtd);
+            }}
+
+            // Update label based on month filters
+            if (labelEl) {{
+                if (monthFilters.length > 0) {{
+                    // Show month range in label
+                    const monthNames = monthFilters.map(f => monthKeyToLabel(f.text)).join(', ');
+                    labelEl.textContent = 'Total Spending (' + monthNames + ')';
+                }} else {{
+                    labelEl.textContent = 'Total Spending (YTD)';
+                }}
+            }}
         }}
 
         function restoreOriginalTotals() {{
@@ -3673,15 +4069,23 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             updateSectionTotal('oneoff-section', originalTotals.oneoff, false, null, originalTotals.totalYtd);
             updateSectionTotal('variable-section', originalTotals.variable, true, originalTotals.variableYtd, originalTotals.totalYtd);
 
-            // Restore summary cards with original values
+            // Restore summary cards with original values (pass both monthly and YTD)
             updateSummaryCards(
                 originalTotals.monthly,
                 originalTotals.variable,
+                originalTotals.monthlyYtd,
+                originalTotals.variableYtd,
                 originalTotals.annual,
                 originalTotals.periodic,
                 originalTotals.travel,
                 originalTotals.oneoff
             );
+
+            // Restore label to YTD
+            const labelEl = document.getElementById('totalSpendingLabel');
+            if (labelEl) {{
+                labelEl.textContent = 'Total Spending (YTD)';
+            }}
         }}
 
         // Sort table by column
@@ -3805,9 +4209,10 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 history.replaceState(null, null, window.location.pathname);
                 return;
             }}
+            const typeMap = {{category: 'c', merchant: 'm', location: 'l', month: 'd'}};
             const encoded = activeFilters.map(f => {{
                 const mode = f.mode === 'exclude' ? '-' : '+';
-                const type = f.type.charAt(0); // c=category, m=merchant, l=location
+                const type = typeMap[f.type] || f.type.charAt(0);
                 return mode + type + ':' + encodeURIComponent(f.text);
             }}).join('&');
             history.replaceState(null, null, '#' + encoded);
@@ -3817,13 +4222,26 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             const hash = window.location.hash.slice(1);
             if (!hash) return;
 
+            const typeMap = {{c: 'category', m: 'merchant', l: 'location', d: 'month'}};
             const parts = hash.split('&');
             parts.forEach(part => {{
-                if (part.length < 3) return;
-                const mode = part.charAt(0) === '-' ? 'exclude' : 'include';
-                const typeChar = part.charAt(1);
-                const type = typeChar === 'c' ? 'category' : typeChar === 'm' ? 'merchant' : 'location';
-                const text = decodeURIComponent(part.slice(3)); // skip mode + type + ':'
+                if (part.length < 2) return;
+
+                // Handle both formats: "+c:value" (with mode) and "c:value" (without mode)
+                let mode = 'include';
+                let startIdx = 0;
+
+                if (part.charAt(0) === '+' || part.charAt(0) === '-') {{
+                    mode = part.charAt(0) === '-' ? 'exclude' : 'include';
+                    startIdx = 1;
+                }}
+
+                const typeChar = part.charAt(startIdx);
+                const colonIdx = part.indexOf(':', startIdx);
+                if (colonIdx === -1) return;
+
+                const type = typeMap[typeChar] || 'category';
+                const text = decodeURIComponent(part.slice(colonIdx + 1));
                 if (text && !activeFilters.some(f => f.text === text && f.type === type)) {{
                     activeFilters.push({{ text, type, mode }});
                 }}
@@ -3859,6 +4277,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         const currencySymbol = '{currency_format}'.split('{{')[0] || '$';
         
         // Chart.js default configuration for theme support
+        Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif";
         Chart.defaults.color = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
         Chart.defaults.borderColor = getComputedStyle(document.documentElement).getPropertyValue('--border-table').trim();
         
@@ -3922,6 +4341,13 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 options: {{
                     responsive: true,
                     maintainAspectRatio: false,
+                    onClick: (event, elements) => {{
+                        if (elements.length > 0) {{
+                            const monthLabel = window.monthlyTrendChart.data.labels[elements[0].index];
+                            const monthKey = monthLabelToKey(monthLabel);
+                            addFilter(monthKey, 'month');
+                        }}
+                    }},
                     plugins: {{
                         legend: {{
                             display: false
@@ -3955,7 +4381,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 }}
             }});
         }}
-        
+
         // 2. Category Pie Chart
         function createCategoryPieChart() {{
             const ctx = document.getElementById('categoryPieChart');
@@ -3979,6 +4405,12 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 options: {{
                     responsive: true,
                     maintainAspectRatio: false,
+                    onClick: (event, elements) => {{
+                        if (elements.length > 0) {{
+                            const category = window.categoryPieChart.data.labels[elements[0].index];
+                            addFilter(category, 'category');
+                        }}
+                    }},
                     plugins: {{
                         legend: {{
                             position: 'bottom',
@@ -4002,7 +4434,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 }}
             }});
         }}
-        
+
         // 3. Category Spending by Month (Stacked Bar Chart)
         function createCategoryByMonthChart() {{
             const ctx = document.getElementById('categoryByMonthChart');
@@ -4024,6 +4456,17 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 options: {{
                     responsive: true,
                     maintainAspectRatio: false,
+                    onClick: (event, elements) => {{
+                        if (elements.length > 0) {{
+                            const datasetIndex = elements[0].datasetIndex;
+                            const dataIndex = elements[0].index;
+                            const category = window.categoryByMonthChart.data.datasets[datasetIndex].label;
+                            const monthLabel = window.categoryByMonthChart.data.labels[dataIndex];
+                            const monthKey = monthLabelToKey(monthLabel);
+                            addFilter(category, 'category');
+                            addFilter(monthKey, 'month');
+                        }}
+                    }},
                     plugins: {{
                         legend: {{
                             position: 'bottom',
@@ -4090,23 +4533,41 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
 
         // Update charts based on filtered transactions
         function updateChartsFromFilters() {{
-            // Collect data from visible transaction rows
+            // Check if month filter is active (requires txn-level visibility check)
+            const hasMonthFilter = window.activeFilters && window.activeFilters.some(f => f.type === 'month');
+
+            // Collect data from transaction rows based on filter type
             const visibleTxns = [];
             document.querySelectorAll('.txn-row').forEach(row => {{
-                // Check if parent merchant row is visible
                 const merchantId = row.dataset.merchant;
                 const merchantRow = document.querySelector(`.merchant-row[data-merchant="${{merchantId}}"]`);
-                if (merchantRow && merchantRow.style.display !== 'none') {{
-                    visibleTxns.push({{
-                        amount: parseFloat(row.dataset.amount) || 0,
-                        month: row.dataset.month,
-                        category: row.dataset.category
-                    }});
+                const merchantVisible = merchantRow && getComputedStyle(merchantRow).display !== 'none';
+
+                if (hasMonthFilter) {{
+                    // Month filter: check both merchant AND txn visibility (month filters hide specific txns)
+                    const txnVisible = getComputedStyle(row).display !== 'none';
+                    if (merchantVisible && txnVisible) {{
+                        visibleTxns.push({{
+                            amount: parseFloat(row.dataset.amount) || 0,
+                            month: row.dataset.month,
+                            category: row.dataset.category
+                        }});
+                    }}
+                }} else {{
+                    // Category/merchant filter: only check merchant visibility
+                    // (txn-rows are collapsed by default, not filtered)
+                    if (merchantVisible) {{
+                        visibleTxns.push({{
+                            amount: parseFloat(row.dataset.amount) || 0,
+                            month: row.dataset.month,
+                            category: row.dataset.category
+                        }});
+                    }}
                 }}
             }});
 
             // If no filters active, use original data
-            if (visibleTxns.length === 0 || activeFilters.length === 0) {{
+            if (visibleTxns.length === 0 || window.activeFilters.length === 0) {{
                 // Reset to original data
                 if (window.monthlyTrendChart) {{
                     window.monthlyTrendChart.data.labels = chartData.monthly.labels;
@@ -4119,10 +4580,11 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                     window.categoryPieChart.update();
                 }}
                 if (window.categoryByMonthChart) {{
-                    window.categoryByMonthChart.data.datasets = chartData.categoryByMonth.datasets.map((ds, i) => ({{
-                        ...window.categoryByMonthChart.data.datasets[i],
-                        data: ds.data
-                    }}));
+                    window.categoryByMonthChart.data.labels = chartData.categoryByMonth.labels;
+                    window.categoryByMonthChart.data.datasets.forEach((ds, i) => {{
+                        ds.data = chartData.categoryByMonth.datasets[i].data;
+                        ds.hidden = false;  // Unhide all datasets
+                    }});
                     window.categoryByMonthChart.update();
                 }}
                 return;
@@ -4176,10 +4638,12 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 }});
                 window.categoryByMonthChart.data.labels = labels;
 
-                // Update each dataset
+                // Update each dataset and hide empty ones
                 window.categoryByMonthChart.data.datasets.forEach(ds => {{
                     const catData = categoryMonthly[ds.label] || {{}};
                     ds.data = sortedMonths.map(m => catData[m] || 0);
+                    // Hide dataset if all values are zero
+                    ds.hidden = ds.data.every(v => v === 0);
                 }});
                 window.categoryByMonthChart.update();
             }}
@@ -4191,6 +4655,11 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             originalApplyFiltersForCharts();
             setTimeout(updateChartsFromFilters, 100);
         }};
+
+        // Update charts if filters were loaded from hash on page load
+        if (window.activeFilters && window.activeFilters.length > 0) {{
+            setTimeout(updateChartsFromFilters, 500);
+        }}
     </script>
 
     <!-- Embedded JSON data for LLM analysis tools -->
