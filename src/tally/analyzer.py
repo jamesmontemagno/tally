@@ -1404,17 +1404,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
     monthly_totals = [by_month[m] for m in sorted_months]
     
     # 2. Category breakdown by month - build spending per category per month
-    category_by_month = defaultdict(lambda: defaultdict(float))
-    for merchant_dict in [monthly_merchants, annual_merchants, periodic_merchants, 
-                          travel_merchants, one_off_merchants, variable_merchants]:
-        for merchant, data in merchant_dict.items():
-            category = data.get('category', 'Other')
-            for txn in data.get('transactions', []):
-                # Parse month from transaction date (MM/DD format stored, need year)
-                # Actually, we need to track by month from the monthly_amounts
-                pass
-    
-    # Build category breakdown from merchant data - use monthly_amounts dict
+    # Build category breakdown from merchant data using monthly_amounts dict
     category_monthly_totals = defaultdict(lambda: defaultdict(float))
     for merchant_dict in [monthly_merchants, annual_merchants, periodic_merchants,
                           travel_merchants, one_off_merchants, variable_merchants]:
@@ -2193,7 +2183,6 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             background: var(--bg-table);
             border-radius: 12px;
             padding: 1.5rem;
-            min-height: 300px;
         }}
         .chart-container h3 {{
             font-size: 1rem;
@@ -3945,7 +3934,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                                 }}
                             }},
                             grid: {{
-                                color: 'rgba(255, 255, 255, 0.05)'
+                                color: getComputedStyle(document.documentElement).getPropertyValue('--border-table').trim()
                             }}
                         }},
                         x: {{
@@ -4068,7 +4057,7 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                                 }}
                             }},
                             grid: {{
-                                color: 'rgba(255, 255, 255, 0.05)'
+                                color: getComputedStyle(document.documentElement).getPropertyValue('--border-table').trim()
                             }}
                         }}
                     }}
