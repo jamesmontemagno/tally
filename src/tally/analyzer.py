@@ -2965,6 +2965,47 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             totalYtd: {actual}
         }};
 
+        // Table configuration - declarative column mapping for each table type
+        // This replaces hardcoded column indices throughout the code
+        const TABLE_CONFIG = {{
+            'monthly-table': {{
+                section: 'monthly-section',
+                columns: {{ merchant: 0, months: 1, count: 2, type: 3, monthly: 4, ytd: 5, pct: 6 }},
+                hasMonthlyColumn: true,
+                totalColumn: 'ytd'
+            }},
+            'variable-table': {{
+                section: 'variable-section',
+                columns: {{ merchant: 0, category: 1, months: 2, count: 3, monthly: 4, ytd: 5, pct: 6 }},
+                hasMonthlyColumn: true,
+                totalColumn: 'ytd'
+            }},
+            'annual-table': {{
+                section: 'annual-section',
+                columns: {{ merchant: 0, category: 1, count: 2, total: 3, pct: 4 }},
+                hasMonthlyColumn: false,
+                totalColumn: 'total'
+            }},
+            'periodic-table': {{
+                section: 'periodic-section',
+                columns: {{ merchant: 0, category: 1, count: 2, total: 3, pct: 4 }},
+                hasMonthlyColumn: false,
+                totalColumn: 'total'
+            }},
+            'travel-table': {{
+                section: 'travel-section',
+                columns: {{ merchant: 0, category: 1, count: 2, total: 3, pct: 4 }},
+                hasMonthlyColumn: false,
+                totalColumn: 'total'
+            }},
+            'oneoff-table': {{
+                section: 'oneoff-section',
+                columns: {{ merchant: 0, category: 1, count: 2, total: 3, pct: 4 }},
+                hasMonthlyColumn: false,
+                totalColumn: 'total'
+            }}
+        }};
+
         // Autocomplete data
         const autocompleteData = [
             {','.join(f'{{"text": "{cat}", "type": "category"}}' for cat in sorted_categories)},
@@ -3019,6 +3060,152 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             // Single month: "2025-12"
             return txnMonth === filterText;
         }}
+
+        // ========================================
+        // FilterEngine - Unified Filter Matching
+        // ========================================
+        const FilterEngine = {{
+            // Map location-based subcategories to location codes
+            locationCategoryMap: {{
+                'barbados': 'br',
+                'hawaii': 'hi',
+                'uk': 'gb',
+                'las vegas': 'nv'
+            }},
+
+            // Check if a transaction matches a single filter
+            txnMatchesFilter(txn, filter) {{
+                const filterText = filter.text.toLowerCase();
+
+                if (filter.type === 'month') {{
+                    const txnMonth = txn.dataset.month || '';
+                    return monthMatchesFilter(txnMonth, filterText);
+                }}
+
+                if (filter.type === 'location') {{
+                    const locBadge = txn.querySelector('.txn-location');
+                    const txnLoc = locBadge ? locBadge.textContent.toLowerCase() : '';
+                    return txnLoc === filterText;
+                }}
+
+                if (filter.type === 'category') {{
+                    // Check transaction's category data
+                    const txnCat = txn.dataset.category || '';
+                    if (txnCat.toLowerCase().includes(filterText)) return true;
+                    // Check transaction description for category terms
+                    const desc = txn.querySelector('.txn-desc');
+                    if (desc && desc.textContent.toLowerCase().includes(filterText)) return true;
+                    // Check if travel table
+                    const tableId = txn.closest('table')?.id;
+                    if (tableId === 'travel-table' && filterText === 'travel') return true;
+                    // Check location-based categories
+                    const locationCode = this.locationCategoryMap[filterText];
+                    if (locationCode) {{
+                        const locBadge = txn.querySelector('.txn-location');
+                        return locBadge && locBadge.textContent.toLowerCase() === locationCode;
+                    }}
+                    return false;
+                }}
+
+                if (filter.type === 'merchant') {{
+                    const merchantId = txn.dataset.merchant;
+                    if (merchantId && merchantId.toLowerCase().includes(filterText)) return true;
+                    const desc = txn.querySelector('.txn-desc');
+                    return desc && desc.textContent.toLowerCase().includes(filterText);
+                }}
+
+                return false;
+            }},
+
+            // Check if a merchant row matches a single filter
+            merchantMatchesFilter(row, filter, txnRows) {{
+                const filterText = filter.text.toLowerCase();
+                const merchantId = row.dataset.merchant;
+                const tableId = row.closest('table')?.id;
+
+                if (filter.type === 'category') {{
+                    // Check visible category cell
+                    const catCell = row.querySelector('.category');
+                    if (catCell) {{
+                        const catText = catCell.textContent.toLowerCase();
+                        if (catText.includes(filterText)) return true;
+                    }}
+                    // Check data-category attribute
+                    const dataCat = row.dataset.category;
+                    if (dataCat && dataCat.includes(filterText)) return true;
+                    // Travel table = all Travel category
+                    if (tableId === 'travel-table' && filterText === 'travel') return true;
+                    // Location-based categories
+                    const locationCode = this.locationCategoryMap[filterText];
+                    if (locationCode) {{
+                        return txnRows.some(txn => {{
+                            if (txn.dataset.merchant !== merchantId) return false;
+                            const locBadge = txn.querySelector('.txn-location');
+                            return locBadge && locBadge.textContent.toLowerCase() === locationCode;
+                        }});
+                    }}
+                    return false;
+                }}
+
+                if (filter.type === 'location') {{
+                    return txnRows.some(txn => {{
+                        if (txn.dataset.merchant !== merchantId) return false;
+                        const locBadge = txn.querySelector('.txn-location');
+                        return locBadge && locBadge.textContent.toLowerCase() === filterText;
+                    }});
+                }}
+
+                if (filter.type === 'month') {{
+                    return txnRows.some(txn => {{
+                        if (txn.dataset.merchant !== merchantId) return false;
+                        const txnMonth = txn.dataset.month || '';
+                        return monthMatchesFilter(txnMonth, filterText);
+                    }});
+                }}
+
+                if (filter.type === 'merchant') {{
+                    const merchCell = row.querySelector('.merchant');
+                    if (merchCell) {{
+                        const merchText = merchCell.textContent.replace('▶', '').trim().toLowerCase();
+                        return merchText === filterText || merchText.includes(filterText);
+                    }}
+                    return false;
+                }}
+
+                return false;
+            }},
+
+            // Check if a transaction matches all include filters (AND across types, OR within type)
+            txnMatchesAllIncludes(txn, includeFilters) {{
+                if (includeFilters.length === 0) return true;
+
+                // Group filters by type
+                const byType = {{}};
+                includeFilters.forEach(f => {{
+                    if (!byType[f.type]) byType[f.type] = [];
+                    byType[f.type].push(f);
+                }});
+
+                // Must match at least one filter of each type present
+                for (const filters of Object.values(byType)) {{
+                    const matchesType = filters.some(f => this.txnMatchesFilter(txn, f));
+                    if (!matchesType) return false;
+                }}
+                return true;
+            }},
+
+            // Check if a transaction matches any exclude filter
+            txnMatchesAnyExclude(txn, excludeFilters) {{
+                return excludeFilters.some(f => this.txnMatchesFilter(txn, f));
+            }},
+
+            // Main entry: check if transaction passes all filters
+            txnPassesFilters(txn, includeFilters, excludeFilters) {{
+                if (!this.txnMatchesAllIncludes(txn, includeFilters)) return false;
+                if (this.txnMatchesAnyExclude(txn, excludeFilters)) return false;
+                return true;
+            }}
+        }};
 
         function addFilter(text, type) {{
             // Don't add duplicate filters
@@ -3140,72 +3327,6 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 return;
             }}
 
-            // Map location-based subcategories to location codes
-            const locationCategoryMap = {{
-                'barbados': 'br',
-                'hawaii': 'hi',
-                'uk': 'gb',
-                'las vegas': 'nv'
-            }};
-
-            // Check if a merchant row matches a filter
-            function merchantMatchesFilter(row, filter, txnRows) {{
-                const filterText = filter.text.toLowerCase();
-                const merchantId = row.dataset.merchant;
-                const tableId = row.closest('table')?.id;
-
-                if (filter.type === 'category') {{
-                    // First check the visible category cell
-                    const catCell = row.querySelector('.category');
-                    if (catCell) {{
-                        const catText = catCell.textContent.toLowerCase();
-                        // Match category or subcategory (format: "Category/Subcategory")
-                        if (catText.includes(filterText)) return true;
-                    }}
-                    // Also check data-category attribute (for tables without visible category)
-                    const dataCat = row.dataset.category;
-                    if (dataCat && dataCat.includes(filterText)) {{
-                        return true;
-                    }}
-                    // Travel table = all items are Travel category
-                    if (tableId === 'travel-table' && filterText === 'travel') {{
-                        return true;
-                    }}
-                    // Check if this is a location-based category (Barbados, Hawaii, UK)
-                    const locationCode = locationCategoryMap[filterText];
-                    if (locationCode) {{
-                        // Check if any transaction has matching location badge
-                        return txnRows.some(txn => {{
-                            if (txn.dataset.merchant !== merchantId) return false;
-                            const locBadge = txn.querySelector('.txn-location');
-                            return locBadge && locBadge.textContent.toLowerCase() === locationCode;
-                        }});
-                    }}
-                    // Fallback: check transaction descriptions
-                    return txnRows.some(txn => {{
-                        if (txn.dataset.merchant !== merchantId) return false;
-                        const desc = txn.querySelector('.txn-desc');
-                        return desc && desc.textContent.toLowerCase().includes(filterText);
-                    }});
-                }} else if (filter.type === 'location') {{
-                    // For location, check if any txn-row for this merchant has matching location
-                    return txnRows.some(txn => {{
-                        if (txn.dataset.merchant !== merchantId) return false;
-                        const locBadge = txn.querySelector('.txn-location');
-                        return locBadge && locBadge.textContent.toLowerCase() === filterText;
-                    }});
-                }} else {{
-                    // Merchant filter - match merchant name
-                    const merchCell = row.querySelector('.merchant');
-                    if (merchCell) {{
-                        // Get just the merchant name, not the chevron
-                        const merchText = merchCell.textContent.replace('▶', '').trim().toLowerCase();
-                        return merchText === filterText || merchText.includes(filterText);
-                    }}
-                    return false;
-                }}
-            }}
-
             // Check if we have location or month filters (requires transaction-level filtering)
             const hasLocationFilter = activeFilters.some(f => f.type === 'location');
             const hasMonthFilter = activeFilters.some(f => f.type === 'month');
@@ -3217,72 +3338,11 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 let hasVisibleRows = false;
 
                 if (needsTxnFiltering) {{
-                    // Location/month filter: filter at transaction level
+                    // Location/month filter: filter at transaction level using FilterEngine
                     const visibleMerchants = new Set();
 
-                    // First, determine which txn-rows match
                     txnRows.forEach(txn => {{
-                        const locBadge = txn.querySelector('.txn-location');
-                        const txnLoc = locBadge ? locBadge.textContent.toLowerCase() : '';
-                        const txnMonth = txn.dataset.month || '';
-
-                        let matchesInclude = includeFilters.length === 0;
-                        let matchesExclude = false;
-
-                        // For include filters, we need to match ALL filter types that are present
-                        // E.g., if we have both category and month filters, txn must match BOTH
-                        const includeByType = {{}};
-                        includeFilters.forEach(f => {{
-                            if (!includeByType[f.type]) includeByType[f.type] = [];
-                            includeByType[f.type].push(f);
-                        }});
-
-                        // Check each filter type - must match at least one filter of each type
-                        let allTypesMatch = true;
-                        for (const [filterType, filters] of Object.entries(includeByType)) {{
-                            let typeMatches = false;
-                            for (const f of filters) {{
-                                if (f.type === 'location' && txnLoc === f.text.toLowerCase()) {{
-                                    typeMatches = true;
-                                    break;
-                                }} else if (f.type === 'month' && monthMatchesFilter(txnMonth, f.text)) {{
-                                    typeMatches = true;
-                                    break;
-                                }} else if (f.type !== 'location' && f.type !== 'month') {{
-                                    // Non-txn-level filters check against merchant
-                                    const merchantId = txn.dataset.merchant;
-                                    const merchantRow = table.querySelector(`tr.merchant-row[data-merchant="${{merchantId}}"]`);
-                                    if (merchantRow && merchantMatchesFilter(merchantRow, f, txnRows)) {{
-                                        typeMatches = true;
-                                        break;
-                                    }}
-                                }}
-                            }}
-                            if (!typeMatches) {{
-                                allTypesMatch = false;
-                                break;
-                            }}
-                        }}
-                        matchesInclude = allTypesMatch;
-
-                        for (const f of excludeFilters) {{
-                            if (f.type === 'location' && txnLoc === f.text.toLowerCase()) {{
-                                matchesExclude = true;
-                                break;
-                            }} else if (f.type === 'month' && monthMatchesFilter(txnMonth, f.text)) {{
-                                matchesExclude = true;
-                                break;
-                            }} else if (f.type !== 'location' && f.type !== 'month') {{
-                                const merchantId = txn.dataset.merchant;
-                                const merchantRow = table.querySelector(`tr.merchant-row[data-merchant="${{merchantId}}"]`);
-                                if (merchantRow && merchantMatchesFilter(merchantRow, f, txnRows)) {{
-                                    matchesExclude = true;
-                                    break;
-                                }}
-                            }}
-                        }}
-
-                        if (matchesInclude && !matchesExclude) {{
+                        if (FilterEngine.txnPassesFilters(txn, includeFilters, excludeFilters)) {{
                             txn.classList.remove('hidden');
                             visibleMerchants.add(txn.dataset.merchant);
                         }} else {{
@@ -3302,18 +3362,18 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                         }}
                     }});
                 }} else {{
-                    // No location filter: filter at merchant level
+                    // No location/month filter: filter at merchant level using FilterEngine
                     merchantRows.forEach(row => {{
                         let shouldShow = false;
 
                         if (includeFilters.length > 0) {{
-                            shouldShow = includeFilters.some(f => merchantMatchesFilter(row, f, txnRows));
+                            shouldShow = includeFilters.some(f => FilterEngine.merchantMatchesFilter(row, f, txnRows));
                         }} else {{
                             shouldShow = true;
                         }}
 
                         if (shouldShow && excludeFilters.length > 0) {{
-                            shouldShow = !excludeFilters.some(f => merchantMatchesFilter(row, f, txnRows));
+                            shouldShow = !excludeFilters.some(f => FilterEngine.merchantMatchesFilter(row, f, txnRows));
                         }}
 
                         if (shouldShow) {{
@@ -3343,11 +3403,109 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 }}
             }});
 
-            // Update totals - use transaction amounts if location or month filter active
-            if (hasLocationFilter || hasMonthFilter) {{
-                updateTotalsFromTransactions();
+            // Update totals using unified calculation
+            const state = computeFilteredState(activeFilters);
+            renderFilteredTotals(state);
+        }}
+
+        // Render totals from computed state - single rendering path
+        function renderFilteredTotals(state) {{
+            const {{ sectionTotals, merchantTotals, merchantMonths, merchantCounts, numFilteredMonths, totalAmount }} = state;
+            const monthFilters = activeFilters.filter(f => f.type === 'month' && f.mode === 'include');
+
+            // Update merchant rows with computed values
+            document.querySelectorAll('.merchant-row:not(.hidden)').forEach(row => {{
+                const merchantId = row.dataset.merchant;
+                const tableId = row.closest('table')?.id;
+                const config = TABLE_CONFIG[tableId];
+                if (!config) return;
+
+                const filteredTotal = merchantTotals[merchantId] || 0;
+                const filteredMonthCount = merchantMonths[merchantId]?.size || 0;
+                const filteredTxnCount = merchantCounts[merchantId] || 0;
+                const cols = config.columns;
+
+                // Update months column if present
+                if (cols.months !== undefined) {{
+                    const monthsCell = row.cells[cols.months];
+                    if (monthsCell) monthsCell.textContent = filteredMonthCount || row.dataset.originalMonths || '';
+                }}
+
+                // Update count column if present
+                if (cols.count !== undefined) {{
+                    const countCell = row.cells[cols.count];
+                    if (countCell) countCell.textContent = filteredTxnCount || row.dataset.originalCount || '';
+                }}
+
+                // Update total/ytd column
+                const totalColName = config.totalColumn;
+                const totalCell = row.cells[cols[totalColName]];
+                if (totalCell && filteredTotal > 0) {{
+                    totalCell.innerHTML = '<span class="money">' + formatMoney(filteredTotal) + '</span>';
+                }}
+
+                // Update monthly column if present
+                if (config.hasMonthlyColumn && cols.monthly !== undefined && filteredTotal > 0) {{
+                    const monthlyCell = row.cells[cols.monthly];
+                    if (monthlyCell) {{
+                        const monthlyAvg = filteredTotal / numFilteredMonths;
+                        monthlyCell.innerHTML = '<span class="money">' + formatMoney(monthlyAvg, true) + '</span>';
+                    }}
+                }}
+
+                // Update percentage column
+                if (cols.pct !== undefined && sectionTotals[tableId] > 0 && filteredTotal > 0) {{
+                    const pctCell = row.cells[cols.pct];
+                    if (pctCell) {{
+                        pctCell.textContent = (filteredTotal / sectionTotals[tableId] * 100).toFixed(1) + '%';
+                    }}
+                }}
+            }});
+
+            // Calculate monthly averages
+            const monthlyAvg = sectionTotals['monthly-table'] / numFilteredMonths;
+            const variableAvg = sectionTotals['variable-table'] / numFilteredMonths;
+
+            // Update section headers
+            updateSectionTotal('monthly-section', monthlyAvg, true, sectionTotals['monthly-table'], totalAmount);
+            updateSectionTotal('annual-section', sectionTotals['annual-table'], false, null, totalAmount);
+            updateSectionTotal('periodic-section', sectionTotals['periodic-table'], false, null, totalAmount);
+            updateSectionTotal('travel-section', sectionTotals['travel-table'], false, null, totalAmount);
+            updateSectionTotal('oneoff-section', sectionTotals['oneoff-table'], false, null, totalAmount);
+            updateSectionTotal('variable-section', variableAvg, true, sectionTotals['variable-table'], totalAmount);
+
+            // Update summary cards
+            updateSummaryCards(
+                monthlyAvg,
+                variableAvg,
+                sectionTotals['monthly-table'],
+                sectionTotals['variable-table'],
+                sectionTotals['annual-table'],
+                sectionTotals['periodic-table'],
+                sectionTotals['travel-table'],
+                sectionTotals['oneoff-table']
+            );
+
+            // Update table total rows
+            updateTableTotalRow('monthly-table', monthlyAvg, sectionTotals['monthly-table']);
+            updateTableTotalRow('annual-table', null, sectionTotals['annual-table']);
+            updateTableTotalRow('periodic-table', null, sectionTotals['periodic-table']);
+            updateTableTotalRow('travel-table', null, sectionTotals['travel-table']);
+            updateTableTotalRow('oneoff-table', null, sectionTotals['oneoff-table']);
+            updateTableTotalRow('variable-table', variableAvg, sectionTotals['variable-table']);
+
+            // Update Total Spending card
+            const totalEl = document.getElementById('totalSpending');
+            const hasOtherIncludeFilters = activeFilters.some(f => f.type !== 'month' && f.mode === 'include');
+
+            if (monthFilters.length > 0 && !hasOtherIncludeFilters) {{
+                totalEl.innerHTML = formatCurrency(totalAmount);
+            }} else if (activeFilters.some(f => f.mode === 'include')) {{
+                const pct = (totalAmount / originalTotals.totalYtd * 100).toFixed(1);
+                totalEl.innerHTML = formatCurrency(totalAmount) +
+                    '<span class="filter-pct"> (' + pct + '%)</span>';
             }} else {{
-                updateAllTotals();
+                totalEl.innerHTML = formatCurrency(totalAmount);
             }}
         }}
 
@@ -3549,11 +3707,16 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
         }}
 
         // Update totals for a table based on visible rows
-        // monthlyFromYtd: if true, calculate monthly as YTD/12 instead of summing Avg/Mo column
-        function updateTableTotals(tableId, monthlyColIndex, ytdColIndex, pctColIndex, monthlyFromYtd = false) {{
+        // Uses TABLE_CONFIG for column indices
+        function updateTableTotals(tableId) {{
             const table = document.getElementById(tableId);
             if (!table) return {{ monthly: 0, ytd: 0 }};
 
+            const config = TABLE_CONFIG[tableId];
+            if (!config) return {{ monthly: 0, ytd: 0 }};
+
+            const cols = config.columns;
+            const totalColName = config.totalColumn;
             const merchantRows = table.querySelectorAll('tbody tr.merchant-row');
             const totalRow = table.querySelector('.total-row');
             let monthlySum = 0;
@@ -3575,13 +3738,16 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 }});
 
                 // Update percentages for visible merchant rows
-                if (pctColIndex !== null && ytdSum > 0) {{
+                if (cols.pct !== undefined && ytdSum > 0) {{
                     merchantRows.forEach(row => {{
-                        if (!row.classList.contains('hidden') && row.cells[pctColIndex]) {{
-                            const merchantId = row.dataset.merchant;
-                            const rowYtd = merchantTotals[merchantId] || 0;
-                            const pct = (rowYtd / ytdSum * 100).toFixed(1);
-                            row.cells[pctColIndex].textContent = pct + '%';
+                        if (!row.classList.contains('hidden')) {{
+                            const pctCell = row.cells[cols.pct];
+                            if (pctCell) {{
+                                const merchantId = row.dataset.merchant;
+                                const rowYtd = merchantTotals[merchantId] || 0;
+                                const pct = (rowYtd / ytdSum * 100).toFixed(1);
+                                pctCell.textContent = pct + '%';
+                            }}
                         }}
                     }});
                 }}
@@ -3601,31 +3767,38 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                     if (!row.classList.contains('hidden')) {{
                         const ytdValue = parseFloat(row.dataset.ytd) || 0;
                         ytdSum += ytdValue;
-                        if (monthlyColIndex !== null) {{
-                            monthlySum += parseMoney(row.cells[monthlyColIndex].textContent);
+                        if (config.hasMonthlyColumn && cols.monthly !== undefined) {{
+                            monthlySum += parseMoney(row.cells[cols.monthly].textContent);
                         }}
                     }}
                 }});
 
                 // Update percentages for visible rows
-                if (pctColIndex !== null && ytdSum > 0) {{
+                if (cols.pct !== undefined && ytdSum > 0) {{
                     merchantRows.forEach(row => {{
-                        if (!row.classList.contains('hidden') && row.cells[pctColIndex]) {{
-                            const rowYtd = parseFloat(row.dataset.ytd) || 0;
-                            const pct = (rowYtd / ytdSum * 100).toFixed(1);
-                            row.cells[pctColIndex].textContent = pct + '%';
+                        if (!row.classList.contains('hidden')) {{
+                            const pctCell = row.cells[cols.pct];
+                            if (pctCell) {{
+                                const rowYtd = parseFloat(row.dataset.ytd) || 0;
+                                const pct = (rowYtd / ytdSum * 100).toFixed(1);
+                                pctCell.textContent = pct + '%';
+                            }}
                         }}
                     }});
                 }}
             }}
 
-            // Update total row
+            // Update total row using TABLE_CONFIG
             if (totalRow) {{
-                if (monthlyColIndex !== null && totalRow.cells[monthlyColIndex]) {{
-                    totalRow.cells[monthlyColIndex].innerHTML = '<span class="money">' + formatMoney(monthlySum, true) + '</span>';
+                if (config.hasMonthlyColumn && cols.monthly !== undefined) {{
+                    const monthlyCell = totalRow.cells[cols.monthly];
+                    if (monthlyCell) {{
+                        monthlyCell.innerHTML = '<span class="money">' + formatMoney(monthlySum, true) + '</span>';
+                    }}
                 }}
-                if (ytdColIndex !== null && totalRow.cells[ytdColIndex]) {{
-                    totalRow.cells[ytdColIndex].innerHTML = '<span class="money">' + formatMoney(ytdSum) + '</span>';
+                const ytdCell = totalRow.cells[cols[totalColName]];
+                if (ytdCell) {{
+                    ytdCell.innerHTML = '<span class="money">' + formatMoney(ytdSum) + '</span>';
                 }}
             }}
 
@@ -3805,6 +3978,95 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             updateAllTotals();
         }}
 
+        // ========================================
+        // Unified Calculation: computeFilteredState
+        // ========================================
+        // Pure calculation function - determines which transactions match filters
+        // and computes all totals. No DOM manipulation.
+        function computeFilteredState(filters) {{
+            const includeFilters = filters.filter(f => f.mode === 'include');
+            const excludeFilters = filters.filter(f => f.mode === 'exclude');
+
+            const sectionTotals = {{
+                'monthly-table': 0,
+                'annual-table': 0,
+                'periodic-table': 0,
+                'travel-table': 0,
+                'oneoff-table': 0,
+                'variable-table': 0
+            }};
+
+            const merchantTotals = {{}};
+            const merchantMonths = {{}};
+            const merchantCounts = {{}};
+            const matchingTxns = new Set();
+
+            // If no filters, all transactions match
+            const hasFilters = filters.length > 0;
+
+            document.querySelectorAll('tr.txn-row').forEach(txn => {{
+                const matches = !hasFilters || FilterEngine.txnPassesFilters(txn, includeFilters, excludeFilters);
+
+                if (matches) {{
+                    matchingTxns.add(txn);
+                    const amount = parseFloat(txn.dataset.amount) || 0;
+                    const merchantId = txn.dataset.merchant;
+                    const month = txn.dataset.month;
+                    const tableId = txn.closest('table')?.id;
+
+                    if (tableId && sectionTotals.hasOwnProperty(tableId)) {{
+                        sectionTotals[tableId] += amount;
+                    }}
+
+                    if (merchantId) {{
+                        if (!merchantTotals[merchantId]) {{
+                            merchantTotals[merchantId] = 0;
+                            merchantMonths[merchantId] = new Set();
+                            merchantCounts[merchantId] = 0;
+                        }}
+                        merchantTotals[merchantId] += amount;
+                        merchantCounts[merchantId]++;
+                        if (month) merchantMonths[merchantId].add(month);
+                    }}
+                }}
+            }});
+
+            // Calculate number of months in the filter for monthly average
+            const monthFilters = filters.filter(f => f.type === 'month' && f.mode === 'include');
+            let numFilteredMonths = 12; // Default: full year
+            if (monthFilters.length > 0) {{
+                const allMonths = new Set();
+                monthFilters.forEach(f => {{
+                    if (f.text.includes('..')) {{
+                        const [start, end] = f.text.split('..');
+                        const startDate = new Date(start + '-01');
+                        const endDate = new Date(end + '-01');
+                        let current = new Date(startDate);
+                        while (current <= endDate) {{
+                            allMonths.add(current.toISOString().slice(0, 7));
+                            current.setMonth(current.getMonth() + 1);
+                        }}
+                    }} else {{
+                        allMonths.add(f.text);
+                    }}
+                }});
+                numFilteredMonths = allMonths.size || 1;
+            }}
+
+            const totalAmount = Object.values(sectionTotals).reduce((a, b) => a + b, 0);
+
+            return {{
+                sectionTotals,
+                merchantTotals,
+                merchantMonths,
+                merchantCounts,
+                matchingTxns,
+                numFilteredMonths,
+                totalAmount,
+                hasFilters
+            }};
+        }}
+
         function updateTotalsFromTransactions() {{
             // Calculate totals from visible transaction rows (for month/location filtering)
             // Sum amounts per merchant and per section based on visible txn-rows
@@ -3872,49 +4134,51 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             }}
 
             // Update each merchant row with filtered amounts, months, and counts
+            // Uses TABLE_CONFIG for column indices instead of hardcoded values
             document.querySelectorAll('.merchant-row').forEach(row => {{
                 const merchantId = row.dataset.merchant;
                 const tableId = row.closest('table')?.id;
+                const config = TABLE_CONFIG[tableId];
+                if (!config) return;
+
                 const filteredTotal = merchantTotals[merchantId] || 0;
                 const filteredMonthCount = merchantMonths[merchantId]?.size || 0;
                 const filteredTxnCount = merchantCounts[merchantId] || 0;
+                const cols = config.columns;
 
                 if (filteredTotal > 0) {{
-                    // Update columns based on table type
-                    // For monthly/variable tables: col 1=Months, col 2=Count, col 4=Monthly, col 5=YTD, col 6=%
-                    // For annual/periodic/oneoff: col 2=Count, col 3=Total, col 4=%
-                    // For travel: col 2=Total, col 3=%
-                    if (tableId === 'monthly-table' || tableId === 'variable-table') {{
-                        const monthsCell = row.cells[1];
-                        const countCell = row.cells[2];
-                        const monthlyCell = row.cells[4];
-                        const ytdCell = row.cells[5];
-                        const pctCell = row.cells[6];
+                    // Update months column if present
+                    if (cols.months !== undefined) {{
+                        const monthsCell = row.cells[cols.months];
                         if (monthsCell) monthsCell.textContent = filteredMonthCount;
+                    }}
+
+                    // Update count column if present
+                    if (cols.count !== undefined) {{
+                        const countCell = row.cells[cols.count];
                         if (countCell) countCell.textContent = filteredTxnCount;
-                        if (ytdCell) ytdCell.innerHTML = '<span class="money">' + formatMoney(filteredTotal) + '</span>';
+                    }}
+
+                    // Update total/ytd column
+                    const totalColName = config.totalColumn;
+                    const totalCell = row.cells[cols[totalColName]];
+                    if (totalCell) {{
+                        totalCell.innerHTML = '<span class="money">' + formatMoney(filteredTotal) + '</span>';
+                    }}
+
+                    // Update monthly column if present
+                    if (config.hasMonthlyColumn && cols.monthly !== undefined) {{
+                        const monthlyCell = row.cells[cols.monthly];
                         if (monthlyCell) {{
                             const monthlyAvg = filteredTotal / numFilteredMonths;
                             monthlyCell.innerHTML = '<span class="money">' + formatMoney(monthlyAvg, true) + '</span>';
                         }}
-                        if (pctCell && sectionTotals[tableId] > 0) {{
-                            pctCell.textContent = (filteredTotal / sectionTotals[tableId] * 100).toFixed(1) + '%';
-                        }}
-                    }} else if (tableId === 'travel-table') {{
-                        const totalCell = row.cells[2];
-                        const pctCell = row.cells[3];
-                        if (totalCell) totalCell.innerHTML = '<span class="money">' + formatMoney(filteredTotal) + '</span>';
-                        if (pctCell && sectionTotals[tableId] > 0) {{
-                            pctCell.textContent = (filteredTotal / sectionTotals[tableId] * 100).toFixed(1) + '%';
-                        }}
-                    }} else {{
-                        // annual, periodic, oneoff tables
-                        const countCell = row.cells[2];
-                        const totalCell = row.cells[3];
-                        const pctCell = row.cells[4];
-                        if (countCell) countCell.textContent = filteredTxnCount;
-                        if (totalCell) totalCell.innerHTML = '<span class="money">' + formatMoney(filteredTotal) + '</span>';
-                        if (pctCell && sectionTotals[tableId] > 0) {{
+                    }}
+
+                    // Update percentage column
+                    if (cols.pct !== undefined && sectionTotals[tableId] > 0) {{
+                        const pctCell = row.cells[cols.pct];
+                        if (pctCell) {{
                             pctCell.textContent = (filteredTotal / sectionTotals[tableId] * 100).toFixed(1) + '%';
                         }}
                     }}
@@ -3946,13 +4210,13 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
                 sectionTotals['oneoff-table']    // oneoffTotal
             );
 
-            // Update table total rows
-            updateTableTotalRow('monthly-table', 4, monthlyAvg, 5, sectionTotals['monthly-table']);
-            updateTableTotalRow('annual-table', null, null, 3, sectionTotals['annual-table']);
-            updateTableTotalRow('periodic-table', null, null, 3, sectionTotals['periodic-table']);
-            updateTableTotalRow('travel-table', null, null, 2, sectionTotals['travel-table']);
-            updateTableTotalRow('oneoff-table', null, null, 3, sectionTotals['oneoff-table']);
-            updateTableTotalRow('variable-table', 4, variableAvg, 5, sectionTotals['variable-table']);
+            // Update table total rows (uses TABLE_CONFIG for column indices)
+            updateTableTotalRow('monthly-table', monthlyAvg, sectionTotals['monthly-table']);
+            updateTableTotalRow('annual-table', null, sectionTotals['annual-table']);
+            updateTableTotalRow('periodic-table', null, sectionTotals['periodic-table']);
+            updateTableTotalRow('travel-table', null, sectionTotals['travel-table']);
+            updateTableTotalRow('oneoff-table', null, sectionTotals['oneoff-table']);
+            updateTableTotalRow('variable-table', variableAvg, sectionTotals['variable-table']);
 
             // Update Total Spending card
             const totalEl = document.getElementById('totalSpending');
@@ -3969,29 +4233,40 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
             }}
         }}
 
-        function updateTableTotalRow(tableId, monthlyColIndex, monthlyValue, ytdColIndex, ytdValue) {{
+        // Update total row for a table - uses TABLE_CONFIG for column indices
+        function updateTableTotalRow(tableId, monthlyValue, ytdValue) {{
             const table = document.getElementById(tableId);
             if (!table) return;
+            const config = TABLE_CONFIG[tableId];
+            if (!config) return;
+
+            const cols = config.columns;
             const totalRow = table.querySelector('.total-row');
             if (totalRow) {{
-                if (monthlyColIndex !== null && totalRow.cells[monthlyColIndex]) {{
-                    totalRow.cells[monthlyColIndex].innerHTML = '<span class="money">' + formatMoney(monthlyValue, true) + '</span>';
+                // Update monthly column if present
+                if (config.hasMonthlyColumn && cols.monthly !== undefined && monthlyValue !== null) {{
+                    const monthlyCell = totalRow.cells[cols.monthly];
+                    if (monthlyCell) {{
+                        monthlyCell.innerHTML = '<span class="money">' + formatMoney(monthlyValue, true) + '</span>';
+                    }}
                 }}
-                if (ytdColIndex !== null && totalRow.cells[ytdColIndex]) {{
-                    totalRow.cells[ytdColIndex].innerHTML = '<span class="money">' + formatMoney(ytdValue) + '</span>';
+                // Update total/ytd column
+                const totalColName = config.totalColumn;
+                const ytdCell = totalRow.cells[cols[totalColName]];
+                if (ytdCell && ytdValue !== null) {{
+                    ytdCell.innerHTML = '<span class="money">' + formatMoney(ytdValue) + '</span>';
                 }}
             }}
         }}
 
         function updateAllTotals() {{
-            // Update all totals based on visible rows
-            // Args: tableId, monthlyColIndex, ytdColIndex, pctColIndex, monthlyFromYtd
-            const monthlyTotals = updateTableTotals('monthly-table', 4, 5, 6, true);
-            const annualTotals = updateTableTotals('annual-table', null, 3, 4);
-            const periodicTotals = updateTableTotals('periodic-table', null, 3, 4);
-            const travelTotals = updateTableTotals('travel-table', null, 2, 3);
-            const oneoffTotals = updateTableTotals('oneoff-table', null, 3, 4);
-            const variableTotals = updateTableTotals('variable-table', 4, 5, 6, true);
+            // Update all totals based on visible rows (uses TABLE_CONFIG for column indices)
+            const monthlyTotals = updateTableTotals('monthly-table');
+            const annualTotals = updateTableTotals('annual-table');
+            const periodicTotals = updateTableTotals('periodic-table');
+            const travelTotals = updateTableTotals('travel-table');
+            const oneoffTotals = updateTableTotals('oneoff-table');
+            const variableTotals = updateTableTotals('variable-table');
 
             // Calculate filtered total for percentage calculations
             const totalYtd = monthlyTotals.ytd + annualTotals.ytd + periodicTotals.ytd + travelTotals.ytd + oneoffTotals.ytd + variableTotals.ytd;
@@ -4054,12 +4329,12 @@ def write_summary_file(stats, filepath, year=2025, home_locations=None, currency
 
         function restoreOriginalTotals() {{
             // Restore table totals for all visible rows
-            updateTableTotals('monthly-table', 4, 5, 6, true);
-            updateTableTotals('annual-table', null, 3, 4);
-            updateTableTotals('periodic-table', null, 3, 4);
-            updateTableTotals('travel-table', null, 2, 3);
-            updateTableTotals('oneoff-table', null, 3, 4);
-            updateTableTotals('variable-table', 4, 5, 6, true);
+            updateTableTotals('monthly-table');
+            updateTableTotals('annual-table');
+            updateTableTotals('periodic-table');
+            updateTableTotals('travel-table');
+            updateTableTotals('oneoff-table');
+            updateTableTotals('variable-table');
 
             // Restore section headers with original values (pass totalYtd for percentage calculation)
             updateSectionTotal('monthly-section', originalTotals.monthly, true, originalTotals.monthlyYtd, originalTotals.totalYtd);
