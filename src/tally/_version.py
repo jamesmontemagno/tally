@@ -126,7 +126,8 @@ def get_latest_release_info(timeout: float = 10.0, prerelease: bool = False) -> 
         owner, repo = parts[-2], parts[-1]
 
         if prerelease:
-            api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/dev"
+            # Find the prerelease from the releases list
+            api_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
         else:
             api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
 
@@ -141,12 +142,32 @@ def get_latest_release_info(timeout: float = 10.0, prerelease: bool = False) -> 
         with urllib.request.urlopen(req, timeout=timeout) as response:
             data = json.loads(response.read().decode('utf-8'))
 
+            # For prerelease, find the one marked as prerelease
+            if prerelease:
+                for release in data:
+                    if release.get('prerelease'):
+                        data = release
+                        break
+                else:
+                    return None  # No prerelease found
+
             assets = {}
             for asset in data.get('assets', []):
                 assets[asset['name']] = asset['browser_download_url']
 
+            # For dev releases, version is in name like "Development Build (0.1.134-dev)"
+            # For stable releases, version is in tag_name like "v0.1.130"
+            version = data.get('tag_name', '').lstrip('v')
+            if version == 'dev':
+                # Extract version from name: "Development Build (0.1.134-dev)" -> "0.1.134-dev"
+                name = data.get('name', '')
+                import re
+                match = re.search(r'\(([0-9]+\.[0-9]+\.[0-9]+-dev)\)', name)
+                if match:
+                    version = match.group(1)
+
             return {
-                'version': data.get('tag_name', '').lstrip('v'),
+                'version': version,
                 'assets': assets,
                 'release_url': data.get('html_url', f'{REPO_URL}/releases/latest')
             }
