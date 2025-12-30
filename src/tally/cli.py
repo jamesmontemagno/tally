@@ -1873,6 +1873,25 @@ def _print_merchant_explanation(name, data, output_format, verbose, num_months):
                     if len(raw_descs) > 10:
                         print(f"    ... and {len(raw_descs) - 10} more (use -vv to see all)")
 
+            # Show transactions with amounts
+            transactions = data.get('transactions', [])
+            if transactions:
+                print()
+                print(f"  Transactions ({len(transactions)}):")
+                sorted_txns = sorted(transactions, key=lambda x: x.get('date', ''), reverse=True)
+                display_txns = sorted_txns if verbose >= 2 else sorted_txns[:10]
+                for txn in display_txns:
+                    date = txn.get('date', '')
+                    amount = txn.get('amount', 0)
+                    desc = txn.get('description', txn.get('raw_description', ''))[:40]
+                    # Show refunds in green
+                    if amount > 0:
+                        print(f"    {date}  {C.GREEN}{amount:>10.2f}{C.RESET}  {desc}")
+                    else:
+                        print(f"    {date}  {amount:>10.2f}  {desc}")
+                if len(transactions) > 10 and verbose < 2:
+                    print(f"    ... and {len(transactions) - 10} more (use -vv to see all)")
+
             trace = reasoning.get('trace', [])
             if trace:
                 print()

@@ -160,8 +160,7 @@ def is_travel_location(location, home_locations):
 def parse_amex(filepath, rules, home_locations=None, cleaning_patterns=None):
     """Parse AMEX CSV file and return list of transactions.
 
-    Handles both positive amounts (expenses) and negative amounts (AMEX exports
-    often use negative for charges). Credits/refunds are skipped.
+    DEPRECATED: Use format strings instead. This parser will be removed in a future release.
     """
     home_locations = home_locations or set()
     transactions = []
@@ -171,16 +170,8 @@ def parse_amex(filepath, rules, home_locations=None, cleaning_patterns=None):
         for row in reader:
             try:
                 amount = float(row['Amount'])
-                # AMEX exports may use negative for charges, positive for credits
-                # We want expenses (charges), so:
-                # - If negative: it's a charge, use absolute value
-                # - If positive and small context suggests it's a charge format: use as-is
-                # - If zero: skip
                 if amount == 0:
                     continue
-                # Use absolute value - we'll treat all non-zero as expenses
-                # (credits are typically marked differently or we don't care about them)
-                amount = abs(amount)
 
                 date = datetime.strptime(row['Date'], '%m/%d/%Y')
                 merchant, category, subcategory, match_info = normalize_merchant(
@@ -210,7 +201,10 @@ def parse_amex(filepath, rules, home_locations=None, cleaning_patterns=None):
 
 
 def parse_boa(filepath, rules, home_locations=None, cleaning_patterns=None):
-    """Parse BOA statement file and return list of transactions."""
+    """Parse BOA statement file and return list of transactions.
+
+    DEPRECATED: Use format strings instead. This parser will be removed in a future release.
+    """
     home_locations = home_locations or set()
     transactions = []
 
@@ -229,11 +223,11 @@ def parse_boa(filepath, rules, home_locations=None, cleaning_patterns=None):
                 description = match.group(2)
                 amount = float(match.group(3).replace(',', ''))
 
-                if amount >= 0:  # Skip credits/income
+                if amount == 0:
                     continue
 
                 merchant, category, subcategory, match_info = normalize_merchant(
-                    description, rules, amount=abs(amount), txn_date=date.date(),
+                    description, rules, amount=amount, txn_date=date.date(),
                     cleaning_patterns=cleaning_patterns
                 )
                 location = extract_location(description)
@@ -242,7 +236,7 @@ def parse_boa(filepath, rules, home_locations=None, cleaning_patterns=None):
                     'date': date,
                     'raw_description': description,
                     'description': description,
-                    'amount': abs(amount),
+                    'amount': amount,
                     'merchant': merchant,
                     'match_info': match_info,
                     'category': category,
